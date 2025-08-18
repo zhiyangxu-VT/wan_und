@@ -172,7 +172,7 @@ class LazySupervisedMixDataset(Dataset):
         list_data_dict = []
 
 
-        train_dataset = load_dataset("webdataset", data_files='/fsx/home/jiuhai.chen/soda/overfit.tar', split="train", num_proc=1, cache_dir='/fsx/sfr/data/jiuhai/webdataset')
+        train_dataset = load_dataset("webdataset", data_files='/fsx/sfr/data/jiuhai/hub/datasets--BLIP3o--BLIP3o-Pretrain-Long-Caption/snapshots/9c9686108de6074520f5d1c6a74e9b3c8aacd801/sa_000000.tar', split="train", num_proc=1, cache_dir='/tmp/webdataset_cache')
         train_dataset = train_dataset.rename_column("jpg", "image")
         train_dataset = train_dataset.add_column('type', len(train_dataset) * ['T2I'])
         train_dataset = train_dataset.remove_columns([col for col in train_dataset.column_names if not col in (
