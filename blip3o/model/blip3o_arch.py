@@ -164,7 +164,7 @@ class blip3oMetaForCausalLM(ABC):
 
         return {'image_features': image_features, 'image_tokens': image_tokens}
 
-    def prepare_inputs_labels_for_multimodal(self, input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities=None, image_sizes=None):
+    def prepare_inputs_labels_for_multimodal(self, input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities=None, image_sizes=None, und_images=None):
         vision_tower = self.get_vision_tower()
 
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
@@ -175,7 +175,9 @@ class blip3oMetaForCausalLM(ABC):
         
         # random scale for training, but scale 1 for understanding evaluation
         if self.training:
-            pool_scale = random.choice(vision_tower.pool_scales)
+            # pool_scale = random.choice(vision_tower.pool_scales)
+            # fix it for editing training
+            pool_scale = 1
         else:
             pool_scale = 1
 

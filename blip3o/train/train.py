@@ -17,6 +17,8 @@ torch.multiprocessing.set_sharing_strategy("file_system")
 
 local_rank = None
 
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 @dataclass
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
@@ -43,7 +45,7 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
-    data_path: str = field(default=None, metadata={"help": "Path to the training data, in blip3o's instruction.json format. Supporting multiple json files via /path/to/{a,b,c}.json"})
+    data_list: str = field(default=None, metadata={"help": "Comma-separated list of dataset paths."})
     lazy_preprocess: bool = False
     is_multimodal: bool = False
     early_mix_text: bool = False
@@ -51,6 +53,9 @@ class DataArguments:
     image_aspect_ratio: str = "square"
     dataset_cls: str = field(default="blip3o")
 
+    def __post_init__(self):
+        if self.data_list is not None:
+            self.data_list = [path.strip() for path in self.data_list.split(',')]
 
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
@@ -213,8 +218,6 @@ def train():
             if "caption" in name:
                 param.requires_grad_(True)   
                 
-
-
 
         total_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters())
         trainable_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters() if p.requires_grad)
