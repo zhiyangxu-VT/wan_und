@@ -8,8 +8,8 @@ import os
 
 @dataclass
 class T2IConfig:
-    model_path: str = "/fsx/home/jiuhai.chen/BLIP3o-NEXT/models/debug"
-    device: str = "cuda:0"
+    model_path: str = "BLIP3o/BLIP3o-NEXT-GRPO-Geneval-3B"
+    device: str = "cuda:1"
     dtype: torch.dtype = torch.bfloat16
     # generation config
     scale: int = 0  
@@ -63,9 +63,12 @@ def main():
     config = T2IConfig()
     inference = TextToImageInference(config)
 
+    # prompts = [
+    #     'A surreal scene on a lunar-like surface, where a brown horse is standing on the back of an astronaut. The horse, which has a dark mane and tail, is equipped with a brown leather saddle and bridle. The astronaut is on their hands and knees on the grey, dusty ground, wearing a white spacesuit with a patch on the shoulder. The astronaut helmet has a dark, reflective visor. The background is the blackness of space, with the blue and white Earth visible in the distance.'
+    # ]   
     prompts = [
-        'A surreal scene on a lunar-like surface, where a brown horse is standing on the back of an astronaut. The horse, which has a dark mane and tail, is equipped with a brown leather saddle and bridle. The astronaut is on their hands and knees on the grey, dusty ground, wearing a white spacesuit with a patch on the shoulder. The astronaut helmet has a dark, reflective visor. The background is the blackness of space, with the blue and white Earth visible in the distance.'
-    ]   
+        "A man with white hair and a beard, wearing a black suit and tie, standing in a room with a table and a chair."
+    ]
 
     output_dir = "BLIP3o-NEXT"
     os.makedirs(output_dir, exist_ok=True)

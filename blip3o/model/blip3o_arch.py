@@ -218,6 +218,38 @@ class blip3oMetaForCausalLM(ABC):
             image_features = self.encode_images(images, modalities, pool_scale=pool_scale)
             image_tokens = image_features['image_tokens']
             image_features = image_features['image_features']
+            
+        # Handle und_images - compute understanding features for image editing
+        und_image_features_per_sample = []
+        und_image_tokens_per_sample = []
+        if und_images is not None and len(und_images) > 0:
+            # und_images is List[List[torch.Tensor]] - batch_size x variable_num_images_per_sample
+            for sample_und_images in und_images:
+                if len(sample_und_images) > 0:
+                    # Concatenate all images for this sample
+                    if isinstance(sample_und_images, list):
+                        # Multiple images - concatenate them
+                        sample_concat = torch.cat(sample_und_images, dim=0)
+                    else:
+                        sample_concat = sample_und_images
+                    
+                    # Encode the understanding images (no discrete tokens, just features)
+                    sample_features = vision_tower(sample_concat.to(self.device))
+                    
+                    # Flatten and concatenate all features for this sample
+                    und_image_features = sample_features['image_features']
+                    und_image_tokens = sample_features['tokens']
+                    
+                    und_image_features_per_sample.append(und_image_features)
+                    und_image_tokens_per_sample.append(und_image_tokens)
+                else:
+                    # Empty sample
+                    und_image_features_per_sample.append(None)
+                    und_image_tokens_per_sample.append(None)
+
+        # Handle images
+        
+            
         # Let's just add dummy tensors if they do not exist,
         # it is a headache to deal with None all the time.
         # But it is not ideal, and if you have a better idea,
