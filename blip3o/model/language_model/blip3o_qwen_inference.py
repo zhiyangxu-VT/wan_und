@@ -93,7 +93,20 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
             inputs_embeds = self.get_model().embed_tokens(inputs)
         return super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
 
-
+    @torch.no_grad()
+    def generate_with_siglip_features(
+        self,
+        inputs: Optional[torch.Tensor] = None,
+        images: Optional[torch.Tensor] = None,
+        image_sizes: Optional[torch.Tensor] = None,
+        modalities: Optional[List[str]] = ["image"],
+        **kwargs,
+    ) -> Union[GenerateOutput, torch.LongTensor]:
+        position_ids = kwargs.pop("position_ids", None)
+        attention_mask = kwargs.pop("attention_mask", None)
+        inputs_embeds = kwargs.pop("inputs_embeds", None)
+        und_image_siglip_features = kwargs.pop("und_image_siglip_features", None)
+        return super(blip3oQwenForInferenceLM, self).generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
 
 
 
@@ -140,24 +153,54 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
     ):
         position_ids = kwargs.pop("position_ids", None)
         # attention_mask = (inputs != -100).long()
+        if not self.config.use_tar_siglip_features:
+            gen_ids = super(blip3oQwenForInferenceLM, self).generate(
+                inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=temperature,
+                attention_mask=attention_mask,
+                top_p=top_p,
+                top_k=top_k)
 
-        gen_ids = super(blip3oQwenForInferenceLM, self).generate(
-            inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=temperature,
-            attention_mask=attention_mask,
-            top_p=top_p,
-            top_k=top_k)
-
-        # breakpoint()
-        with torch.no_grad():
-            outs = self.model(
-                input_ids = gen_ids, 
-                output_hidden_states = True,
-                return_dict = True,
+            # breakpoint()
+            with torch.no_grad():
+                outs = self.model(
+                    input_ids = gen_ids, 
+                    output_hidden_states = True,
+                    return_dict = True,
+                )
+        else:
+            gen_ids_new = self.generate_with_siglip_features(
+                inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=temperature,
+                attention_mask=attention_mask,
+                inputs_embeds=kwargs['input_embeds'],
+                top_p=top_p,
+                top_k=top_k,
+                und_image_siglip_features=kwargs['und_image_siglip_features']
             )
-        hidden_states = outs.hidden_states[-1]   
+
+            # concat inputs (the input ids) with the gen_ids
+            gen_ids = torch.cat([inputs, gen_ids_new], dim=1)
+            
+            # breakpoint()
+            with torch.no_grad():
+                # get the embeddings of the gen_ids
+                gen_ids_embeds = self.get_input_embeddings()(gen_ids_new)
+                # concat the input_embeds with the gen_ids_embeds
+                all_embeds = torch.cat([kwargs['input_embeds'], gen_ids_embeds], dim=1)
+
+                outs = self.model(
+                    input_ids = None,
+                    inputs_embeds = all_embeds,
+                    output_hidden_states = True,
+                    return_dict = True,
+                )
+        
+        hidden_states = outs.hidden_states[-1]
 
 
         start_pos = (gen_ids == self.config.image_start_tag_id).float().argmax(dim=1)   

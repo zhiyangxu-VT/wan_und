@@ -8,8 +8,14 @@ import torch.nn as nn
 from blip3o.constants import (
     DEFAULT_IM_END_TOKEN,
     DEFAULT_IM_START_TOKEN,
+    DEFAULT_VISION_START_TOKEN,
+    DEFAULT_VISION_END_TOKEN,
+    DEFAULT_IMAGE_PAD_TOKEN,
     IGNORE_INDEX,
     IMAGE_TOKEN_INDEX,
+    VISION_START_TOKEN_INDEX,
+    VISION_END_TOKEN_INDEX,
+    IMAGE_PAD_TOKEN_INDEX,
 )
 from blip3o.utils import rank0_print
 from .multimodal_encoder.builder import build_vision_tower
@@ -29,6 +35,8 @@ class blip3oMetaModel:
 
             self.sana = build_sana(config)
             self.sana_vae = build_vae(config)
+            self.use_tar_siglip_features = getattr(config, "use_tar_siglip_features", False)
+            rank0_print(f"Model arch: use_tar_siglip_features = {self.use_tar_siglip_features}")
             norm = RMSNorm(2304, eps=1e-5, elementwise_affine=True)
 
             with torch.no_grad():
@@ -39,6 +47,16 @@ class blip3oMetaModel:
                 nn.Linear(2304, 2304),
                 norm,
             )
+            if self.config.use_tar_siglip_features:
+                norm_siglip_features_connector = RMSNorm(self.config.hidden_size, eps=1e-5, elementwise_affine=True)
+                # with torch.no_grad():
+                #     norm_siglip_features_connector.weight.fill_(math.sqrt(5.5))
+                self.tar_siglip_features_connector = nn.Sequential(
+                    nn.Linear(1152, config.hidden_size),
+                    nn.GELU(approximate="tanh"),
+                    nn.Linear(config.hidden_size, config.hidden_size),
+                    norm_siglip_features_connector,
+                )
             self.noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(config.diffusion_name_or_path, subfolder="scheduler")
             
             self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(config.diffusion_name_or_path, subfolder="scheduler")
@@ -135,6 +153,30 @@ class blip3oMetaModel:
         else:
             for p in self.diffusion_connector.parameters():
                 p.requires_grad = True
+        
+        if getattr(self, 'tar_siglip_features_connector', None) is None and self.config.use_tar_siglip_features:
+            norm_siglip_features_connector = RMSNorm(self.config.hidden_size, eps=1e-5, elementwise_affine=True)
+            
+            self.tar_siglip_features_connector = nn.Sequential(
+                nn.Linear(1152, self.config.hidden_size),
+                nn.GELU(approximate="tanh"),
+                nn.Linear(self.config.hidden_size, self.config.hidden_size),
+                norm_siglip_features_connector,
+                )
+                
+                # Initialize RMSNorm weight properly for bfloat16 stability
+                # nn.init.constant_(self.tar_siglip_features_connector[-1].weight, 0.1)
+        elif self.config.use_tar_siglip_features:
+            # Proper weight initialization to prevent NaN
+            with torch.no_grad():
+                self.tar_siglip_features_connector[-1].weight.fill_(math.sqrt(5.5))
+                nn.init.xavier_uniform_(self.tar_siglip_features_connector[0].weight, gain=0.1)
+                nn.init.xavier_uniform_(self.tar_siglip_features_connector[2].weight, gain=0.1)
+                self.tar_siglip_features_connector[0].bias.zero_()
+                self.tar_siglip_features_connector[2].bias.zero_()
+            for p in self.tar_siglip_features_connector.parameters():
+                p.requires_grad = True
+                    
 
         self.config.use_mm_proj = True
         self.config.mm_hidden_size = vision_tower.hidden_size
@@ -160,11 +202,11 @@ class blip3oMetaForCausalLM(ABC):
 
         # discrete features for gen related tasks
         image_tokens = image_tokens + self.config.image_start_token_id
-        image_features = self.get_model().embed_tokens(image_tokens)
+        image_features_embeded = self.get_model().embed_tokens(image_tokens)
 
-        return {'image_features': image_features, 'image_tokens': image_tokens}
+        return {'image_features': image_features_embeded, 'image_tokens': image_tokens, 'siglip_features': image_features['image_features']}
 
-    def prepare_inputs_labels_for_multimodal(self, input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities=None, image_sizes=None, und_images=None):
+    def prepare_inputs_labels_for_multimodal(self, input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities=None, image_sizes=None, und_images=None, tokenizer=None):
         vision_tower = self.get_vision_tower()
 
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
@@ -229,16 +271,15 @@ class blip3oMetaForCausalLM(ABC):
                     # Concatenate all images for this sample
                     if isinstance(sample_und_images, list):
                         # Multiple images - concatenate them
-                        sample_concat = torch.cat(sample_und_images, dim=0)
+                        sample_concat = torch.cat([img.unsqueeze(0) for img in sample_und_images], dim=0)
                     else:
                         sample_concat = sample_und_images
                     
                     # Encode the understanding images (no discrete tokens, just features)
-                    sample_features = vision_tower(sample_concat.to(self.device))
-                    
-                    # Flatten and concatenate all features for this sample
-                    und_image_features = sample_features['image_features']
-                    und_image_tokens = sample_features['tokens']
+                    # sample_features = vision_tower(sample_concat.to(self.device))
+                    encoded_image_features = self.encode_images(sample_concat, modalities, pool_scale=pool_scale)
+                    und_image_features = encoded_image_features['siglip_features']
+                    und_image_tokens = encoded_image_features['image_tokens']
                     
                     und_image_features_per_sample.append(und_image_features)
                     und_image_tokens_per_sample.append(und_image_tokens)
@@ -247,9 +288,50 @@ class blip3oMetaForCausalLM(ABC):
                     und_image_features_per_sample.append(None)
                     und_image_tokens_per_sample.append(None)
 
-        # Handle images
-        
+        # Handle understanding images and replace the image pad tokens with the actual understanding images embeddings
+        if und_image_features_per_sample:
+            # Try to get tokenizer from parameter, stored reference, or config
+            tokenizer_to_use = tokenizer or getattr(self, '_tokenizer', None)
+            image_pad_token_id = tokenizer_to_use.convert_tokens_to_ids(DEFAULT_IMAGE_PAD_TOKEN)
             
+            siglip_features_projected_embeddings = []
+            
+            for batch_idx, cur_input_ids in enumerate(input_ids):
+                if batch_idx < len(und_image_features_per_sample) and und_image_features_per_sample[batch_idx] is not None:
+                    # Find image pad token positions
+                    image_pad_indices = torch.where(cur_input_ids == image_pad_token_id)[0]
+                    if len(image_pad_indices) > 0:
+                        # Get the understanding images features and tokens
+                        und_image_features = und_image_features_per_sample[batch_idx]
+                        und_image_tokens = und_image_tokens_per_sample[batch_idx]
+                        
+                        assert und_image_tokens is not None or und_image_features is not None, "und_image_tokens and und_image_features are both None"
+                        
+                        # if self.get_model().use_tar_siglip_features:
+                        #     # use features instead of tokens here and the rest of the code is the same
+                        #     und_image_tokens = self.get_model().tar_siglip_features_connector(und_image_features)
+                        # Flatten tokens if needed
+                        if und_image_tokens.dim() > 1:
+                            und_image_tokens = und_image_tokens.flatten()
+                        
+                        # Replace pad tokens with understanding tokens (limit to available tokens)
+                        num_replacements = min(len(image_pad_indices), len(und_image_tokens))
+                        if num_replacements > 0:
+                            # if use_tar_siglip_features is True, we don't replace the image tokens for now, will replace it later after get the embeddings
+                            if not self.config.use_tar_siglip_features:
+                                cur_input_ids[image_pad_indices[:num_replacements]] = und_image_tokens[:num_replacements]
+                            else:
+                                # keep the last dimension and flatten the rest, don't assume the shape of the features
+                                siglip_features_projected_embeddings.append(self.get_model().tar_siglip_features_connector(und_image_features.reshape(-1, und_image_features.shape[-1])))
+                            
+                            # Update attention mask and labels for replaced positions
+                            if attention_mask is not None:
+                                attention_mask[batch_idx, image_pad_indices[:num_replacements]] = True
+                            if labels is not None:
+                                labels[batch_idx, image_pad_indices[:num_replacements]] = IGNORE_INDEX
+                else:
+                    siglip_features_projected_embeddings.append(None)
+                
         # Let's just add dummy tensors if they do not exist,
         # it is a headache to deal with None all the time.
         # But it is not ideal, and if you have a better idea,
@@ -297,6 +379,14 @@ class blip3oMetaForCausalLM(ABC):
                 cur_labels_noim.append(cur_labels[image_token_indices[i] + 1 : image_token_indices[i + 1]])
             split_sizes = [x.shape[0] for x in cur_labels_noim]
             cur_input_embeds = self.get_model().embed_tokens(torch.cat(cur_input_ids_noim))
+            
+            if self.config.use_tar_siglip_features and und_images[batch_idx]:
+                siglip_features_projected_embedding = siglip_features_projected_embeddings[batch_idx]
+                # do the replacement here, replace the image tokens with the siglip features projected embeddings
+                # use the image_pad_indices to replace the image tokens
+                image_pad_indices = torch.where(cur_input_ids == image_pad_token_id)[0]
+                cur_input_embeds[image_pad_indices] = siglip_features_projected_embedding
+            
             cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
             cur_new_input_embeds = []
             cur_new_labels = []
@@ -387,6 +477,9 @@ class blip3oMetaForCausalLM(ABC):
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
 
     def initialize_vision_tokenizer(self, model_args, tokenizer):
+        # Store tokenizer reference for later use
+        self._tokenizer = tokenizer
+        
         total_num_new_tokens = 0
         vocab_size = len(tokenizer)
         if model_args.mm_use_im_start_end:
@@ -395,6 +488,15 @@ class blip3oMetaForCausalLM(ABC):
             self.config.image_end_tag_id = tokenizer.convert_tokens_to_ids(DEFAULT_IM_END_TOKEN)
             total_num_new_tokens += num_new_tokens
             self.resize_token_embeddings(vocab_size + total_num_new_tokens)
+
+        # Add vision understanding tokens
+        # vision_tokens = [DEFAULT_VISION_START_TOKEN, DEFAULT_VISION_END_TOKEN, DEFAULT_IMAGE_PAD_TOKEN]
+        # num_vision_tokens = tokenizer.add_tokens(vision_tokens, special_tokens=True)
+        # self.config.vision_start_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_VISION_START_TOKEN)
+        # self.config.vision_end_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_VISION_END_TOKEN)
+        # self.config.image_pad_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_PAD_TOKEN)
+        # total_num_new_tokens += num_vision_tokens
+        # self.resize_token_embeddings(vocab_size + total_num_new_tokens)
 
         if model_args.num_scale_tokens > 0:
             scale_tokens = [model_args.scale_token_format.format(str(i)) for i in range(model_args.num_scale_tokens)]

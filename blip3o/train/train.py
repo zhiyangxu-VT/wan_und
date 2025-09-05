@@ -42,6 +42,7 @@ class ModelArguments:
     num_scale_tokens: Optional[int] = field(default=3)
     scale_token_format: str = field(default="<S{}>")
     load_embeddings_from_vision: Optional[bool] = field(default=False)
+    use_tar_siglip_features: Optional[bool] = field(default=False)
 
 @dataclass
 class DataArguments:
@@ -115,6 +116,9 @@ def get_model(model_args, training_args):
             f"model_max_length: {training_args.model_max_length}, max_position_embeddings: {cfg_pretrained.max_position_embeddings}, rope_scaling_factor: {model_args.rope_scaling_factor}"
         )
 
+    # Set use_tar_siglip_features in config before model initialization
+    overwrite_config["use_tar_siglip_features"] = model_args.use_tar_siglip_features
+
     if overwrite_config:
         assert cfg_pretrained is not None, "cfg_pretrained is None"
 
@@ -138,6 +142,9 @@ def train():
 
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    # Debug: Print the parsed arguments
+    rank0_print(f"Parsed use_tar_siglip_features: {model_args.use_tar_siglip_features}")
 
     local_rank = training_args.local_rank
 
@@ -183,6 +190,7 @@ def train():
 
         model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_vision_tower_lr = training_args.mm_vision_tower_lr
+        rank0_print(f"Model config use_tar_siglip_features: {model.config.use_tar_siglip_features}")
         training_args.use_im_start_end = model_args.mm_use_im_start_end
 
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
@@ -232,10 +240,12 @@ def train():
 
 
     if trainer.is_world_process_zero():
-        stat = []
-        for i, (n, p) in enumerate(trainer.model.named_parameters()):
-            stat.append([i, n, p.shape, p.requires_grad])
-        print(tabulate(stat, headers=["idx", "name", "shape", "trainable"]))
+        # Debug: Comment out parameter listing for now
+        # stat = []
+        # for i, (n, p) in enumerate(trainer.model.named_parameters()):
+        #     stat.append([i, n, p.shape, p.requires_grad])
+        # print(tabulate(stat, headers=["idx", "name", "shape", "trainable"]))
+        pass
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)

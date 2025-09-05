@@ -91,6 +91,7 @@ def preprocess_multimodal(sources, data_args) -> Dict:
 
 def preprocess_multimodal_x2i(sources, data_args) -> Dict:
     # For image editing, we need custom handling since it has both und and gen tokens
+    replace_token = DEFAULT_IMAGE_TOKEN
     sources_copy_conv = copy.deepcopy([sources["conversations"]])
     n_und_query = data_args.n_und_query  # Per image query count
     input_images = sources["input_images"]
@@ -104,7 +105,9 @@ def preprocess_multimodal_x2i(sources, data_args) -> Dict:
             if sentence["from"] == "human" and "<image>" in sentence["value"]:
                 sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, und_placeholder).strip()
             elif sentence["from"] == "gpt" and "<image>" in sentence["value"]:
-                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
+                if data_args.mm_use_im_start_end:
+                    replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
+                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token).strip()
     return sources_copy_conv
 
 def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, max_len=2048, system_message: str = "You are a helpful assistant.") -> Dict:
@@ -239,6 +242,8 @@ class LazySupervisedMixDataset(Dataset):
                     train_dataset = train_dataset.add_column('image', len(train_dataset) * [None])
                     train_dataset = train_dataset.rename_column("input_images", "input_images_paths")
                     train_dataset = train_dataset.add_column('input_images', len(train_dataset) * [[]])
+                    repeat_time = 10
+                    train_dataset = concatenate_datasets([train_dataset] * repeat_time)
                     print("loaded inpaint dataset with ", len(train_dataset), " samples", "from ", dataset_path)
                 elif "video_edit" in dataset_path.lower():
                     # train_dataset = train_dataset.add_column('type', len(train_dataset) * ['X2I_x2i2_video_edit'])
@@ -298,6 +303,11 @@ class LazySupervisedMixDataset(Dataset):
                     train_dataset = train_dataset.add_column('input_images_paths', len(train_dataset) * [None])
                     # repeat this dataset 20 times
                     # train_dataset = train_dataset.repeat(10)
+                    # train_dataset = train_dataset.remove_columns([col for col in train_dataset.column_names if not col in (
+                    #     ["image", "type", "image_path", "input_images", "input_images_paths"])])
+                    repeat_time = 10
+                    train_dataset = concatenate_datasets([train_dataset] * repeat_time)
+
                     print("loaded BLIP3o-60k dataset with ", len(train_dataset), " samples", "from ", dataset_path)
                 else:
                     raise ValueError(f"No TAR files found in {dataset_path}")
@@ -315,7 +325,12 @@ class LazySupervisedMixDataset(Dataset):
                     train_dataset = train_dataset.add_column('input_images_paths', len(train_dataset) * [None])
                     # repeat this dataset 10 times
                     # train_dataset = train_dataset.repeat(10)
+                    # train_dataset = train_dataset.remove_columns([col for col in train_dataset.column_names if not col in (
+                    #     ["image", "txt", "type", "image_path", "input_images", "input_images_paths"])])
+                    repeat_time = 10
+                    train_dataset = concatenate_datasets([train_dataset] * repeat_time)
                     print("loaded sharegpt4o t2i dataset with ", len(train_dataset), " samples", "from ", dataset_path)
+
                 elif 'x2i' in dataset_path.lower():
                     # train_dataset = load_dataset("webdataset", data_files=tar_files, split="train", num_proc=1, cache_dir='/fsx/home/lxue/repos/BLIP3o/edit_data/sharegpt4o_x2i')
                     train_dataset = load_dataset("json", data_files=dataset_path, split="train", num_proc=1)
@@ -327,6 +342,11 @@ class LazySupervisedMixDataset(Dataset):
                     train_dataset = train_dataset.add_column('image', len(train_dataset) * [None])
                     # repeat this dataset 10 times
                     # train_dataset = train_dataset.repeat(10)
+                    
+                    # train_dataset = train_dataset.remove_columns([col for col in train_dataset.column_names if not col in (
+                    #     ["image", "txt", "type", "image_path", "input_images", "input_images_paths"])])
+                    repeat_time = 10
+                    train_dataset = concatenate_datasets([train_dataset] * repeat_time)
                     print("loaded sharegpt4o x2i dataset with ", len(train_dataset), " samples", "from ", dataset_path)
             else:
                 # assume the dataset is a glob of tar files, like the ones used in the original blip3o

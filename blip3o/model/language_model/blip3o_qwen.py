@@ -25,6 +25,7 @@ class blip3oQwenModel(blip3oMetaModel, Qwen3Model):
 
     def __init__(self, config: Qwen3Config):
         super(blip3oQwenModel, self).__init__(config)
+        self.config = config
 
 class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
     config_class = blip3oQwenConfig
@@ -33,6 +34,8 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
         Qwen3ForCausalLM.__init__(self, config)
         config.model_type = "blip3o_qwen"
         config.rope_scaling = None
+        config.use_tar_siglip_features = config.use_tar_siglip_features
+        self.config = config
 
         self.model = blip3oQwenModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
