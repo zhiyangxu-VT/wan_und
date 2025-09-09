@@ -509,6 +509,7 @@ class LazySupervisedMixDataset(Dataset):
                 if not images is None:
                     try:
                         process_images = [self.process_image(f) for f in images]
+                        process_images_for_und_vae = [self.process_target_image(f) for f in images[:-1]]
                     except Exception as e:
                         print(f"Error wrong number of channels: {e}")
                         images = None
@@ -537,6 +538,7 @@ class LazySupervisedMixDataset(Dataset):
                 data_dict["image"] = process_images[-1]
                 data_dict["target_image"] = self.process_target_image(images[-1])
                 data_dict["und_images"] = [image[0] for image in process_images[:-1]]
+                data_dict["und_images_for_vae"] = [image for image in process_images_for_und_vae]
 
             data_dict["ids"] = sources["id"] if "id" in sources else "unk"
             return data_dict
@@ -581,14 +583,22 @@ class DataCollatorForSupervisedDataset(object):
             batch["target_images"] = target_images
 
         batch_und_images = []
+        batch_und_images_for_vae = []
         for instance in instances:
             if "und_images" in instance:
                 batch_und_images.append(instance["und_images"])
+            if "und_images_for_vae" in instance:
+                batch_und_images_for_vae.append(instance["und_images_for_vae"])
         if len(batch_und_images) > 0:
             batch["und_images"] = batch_und_images
         else:
             batch["und_images"] = None
 
+        if len(batch_und_images_for_vae) > 0:
+            batch["und_images_for_vae"] = batch_und_images_for_vae
+        else:
+            batch["und_images_for_vae"] = None
+        
         if "prompt" in instances[0]:
             batch["prompts"] = [instance["prompt"] for instance in instances]
         return batch

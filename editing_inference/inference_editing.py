@@ -19,6 +19,17 @@ import copy
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from blip3o.constants import *
 from blip3o.model import *
+from torchvision.transforms import v2
+
+target_transform = v2.Compose(
+    [
+        v2.Resize(1024),
+        v2.CenterCrop(1024),
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize([0.5], [0.5]),
+    ]
+    )
 
 
 @dataclass
@@ -32,7 +43,7 @@ class EditingConfig:
     top_p: float = 0.95
     top_k: int = 1200
     use_tar_siglip_features: bool = False
-
+    use_und_image_vae: bool = False
 
 def set_global_seed(seed=42):
     """Set global random seed for reproducibility."""
@@ -157,6 +168,23 @@ class ImageEditingInference:
         
         return processed_images
 
+    def process_understanding_images_vae(self, input_images):
+        """Process input images for understanding (editing) using UND image VAE."""
+        if not input_images:
+            return None
+        
+        processed_images = []
+        for img in input_images:
+            img = target_transform(img)
+            img = img.to(dtype=next(self.model.model.sana_vae.parameters()).dtype, device=self.device).unsqueeze(0)
+            latent = self.model.model.sana_vae.encode(img).latent
+            if "shift_factor" in self.model.model.sana_vae.config and self.model.model.sana_vae.config.shift_factor is not None:
+                latent = latent - self.model.model.sana_vae.config.shift_factor
+            latent = latent * self.model.model.sana_vae.config.scaling_factor
+            processed_images.append(latent)
+        
+        return processed_images
+
     def generate_image(self, instruction: str, input_images=None) -> Image.Image:
         """
         Generate or edit an image based on instruction.
@@ -189,6 +217,12 @@ class ImageEditingInference:
             
             # Process understanding images to get tokens
             processed_images = self.process_understanding_images(input_images)
+            if self.config.use_und_image_vae:
+                print("✅ Processing understanding images for image editing using UND image VAE")
+                processed_images_vae = self.process_understanding_images_vae(input_images)
+                image_concat_vae = torch.cat(processed_images_vae, dim=0) if isinstance(processed_images_vae, list) else processed_images_vae
+            else:
+                image_concat_vae = None
             image_concat = torch.cat(processed_images, dim=0) if isinstance(processed_images, list) else processed_images
             
             # Get understanding image tokens from vision tower
@@ -248,6 +282,7 @@ class ImageEditingInference:
                     top_k=self.config.top_k,
                     input_embeds=input_embeds.to(self.device),
                     und_image_siglip_features=und_image_siglip_features.to(self.device),
+                    und_image_vae_latents=image_concat_vae.to(self.device) if image_concat_vae is not None else None,
                 )
             else:
                 print("🎨 Generating image with image tokens...")
@@ -258,6 +293,7 @@ class ImageEditingInference:
                     do_sample=True,
                     top_p=self.config.top_p,
                     top_k=self.config.top_k,
+                    und_image_vae_latents=image_concat_vae.to(self.device) if image_concat_vae is not None else None,
                 )
 
         return output_image[0] if output_image else None
@@ -348,6 +384,8 @@ Examples:
     parser.add_argument("--device", "-d", default="cuda:0", help="Device to use")
     parser.add_argument("--use_tar_siglip_features", action="store_true", 
                        help="Use TAR SigLIP features for image generation (requires model with TAR SigLIP support)")
+    parser.add_argument("--use_und_image_vae", action="store_true", 
+                       help="Use UND image VAE for image generation (requires model with UND image VAE support)")
     
     args = parser.parse_args()
     
@@ -374,6 +412,7 @@ Examples:
     print(f"💾 Output: {args.output or 'Auto-generated'}")
     print(f"🖥️  Device: {args.device}")
     print(f"🔧 TAR SigLIP Features: {'Enabled' if args.use_tar_siglip_features else 'Disabled'}")
+    print(f"🔧 UND image VAE: {'Enabled' if args.use_und_image_vae else 'Disabled'}")
     print("=" * 60)
     
     try:
@@ -381,7 +420,8 @@ Examples:
         config = EditingConfig(
             model_path=args.model_path,
             device=args.device,
-            use_tar_siglip_features=args.use_tar_siglip_features
+            use_tar_siglip_features=args.use_tar_siglip_features,
+            use_und_image_vae=args.use_und_image_vae
         )
         
         inference = ImageEditingInference(config)

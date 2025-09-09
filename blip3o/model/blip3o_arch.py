@@ -57,6 +57,14 @@ class blip3oMetaModel:
                     nn.Linear(config.hidden_size, config.hidden_size),
                     norm_siglip_features_connector,
                 )
+            if getattr(self.config, "use_und_image_vae", False):
+                norm_und_image_vae_connector = RMSNorm(2304, eps=1e-5, elementwise_affine=True)
+                self.und_image_vae_connector = nn.Sequential(
+                    nn.Linear(32, 2304),
+                    nn.GELU(approximate="tanh"),
+                    nn.Linear(2304, 2304),
+                    norm_und_image_vae_connector,
+                )
             self.noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(config.diffusion_name_or_path, subfolder="scheduler")
             
             self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(config.diffusion_name_or_path, subfolder="scheduler")
@@ -176,7 +184,24 @@ class blip3oMetaModel:
                 self.tar_siglip_features_connector[2].bias.zero_()
             for p in self.tar_siglip_features_connector.parameters():
                 p.requires_grad = True
-                    
+                
+        if getattr(self, 'und_image_vae_connector', None) is None and self.config.use_und_image_vae:
+            norm_und_image_vae_connector = RMSNorm(2304, eps=1e-5, elementwise_affine=True)
+            self.und_image_vae_connector = nn.Sequential(
+                nn.Linear(32, 2304),
+                nn.GELU(approximate="tanh"),
+                nn.Linear(2304, 2304),
+                norm_und_image_vae_connector,
+            )
+        elif self.config.use_und_image_vae:
+            with torch.no_grad():
+                self.und_image_vae_connector[-1].weight.fill_(math.sqrt(5.5))
+                nn.init.xavier_uniform_(self.und_image_vae_connector[0].weight, gain=0.1)
+                nn.init.xavier_uniform_(self.und_image_vae_connector[2].weight, gain=0.1)
+                self.und_image_vae_connector[0].bias.zero_()
+                self.und_image_vae_connector[2].bias.zero_()
+            for p in self.und_image_vae_connector.parameters():
+                p.requires_grad = True
 
         self.config.use_mm_proj = True
         self.config.mm_hidden_size = vision_tower.hidden_size

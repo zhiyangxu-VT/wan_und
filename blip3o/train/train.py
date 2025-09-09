@@ -43,6 +43,7 @@ class ModelArguments:
     scale_token_format: str = field(default="<S{}>")
     load_embeddings_from_vision: Optional[bool] = field(default=False)
     use_tar_siglip_features: Optional[bool] = field(default=False)
+    use_und_image_vae: Optional[bool] = field(default=False)
 
 @dataclass
 class DataArguments:
@@ -119,6 +120,8 @@ def get_model(model_args, training_args):
     # Set use_tar_siglip_features in config before model initialization
     overwrite_config["use_tar_siglip_features"] = model_args.use_tar_siglip_features
 
+    overwrite_config["use_und_image_vae"] = model_args.use_und_image_vae
+
     if overwrite_config:
         assert cfg_pretrained is not None, "cfg_pretrained is None"
 
@@ -191,6 +194,7 @@ def train():
         model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_vision_tower_lr = training_args.mm_vision_tower_lr
         rank0_print(f"Model config use_tar_siglip_features: {model.config.use_tar_siglip_features}")
+        rank0_print(f"Model config use_und_image_vae: {model.config.use_und_image_vae}")
         training_args.use_im_start_end = model_args.mm_use_im_start_end
 
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)

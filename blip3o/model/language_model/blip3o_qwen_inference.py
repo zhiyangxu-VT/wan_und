@@ -149,6 +149,7 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
         num_images_per_prompt: int = 1,
         return_tensor=False,
         enable_progress_bar=False,
+        und_image_vae_latents: Optional[torch.Tensor] = None,
         **kwargs,
     ):
         position_ids = kwargs.pop("position_ids", None)
@@ -163,7 +164,7 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
                 top_p=top_p,
                 top_k=top_k)
 
-            # breakpoint()
+            # breakpoint()m
             with torch.no_grad():
                 outs = self.model(
                     input_ids = gen_ids, 
@@ -244,6 +245,15 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
 
         # pred_latent = torch.cat([pred_latent] * 2)
         # Convert to float32 before saving
+        encoder_hidden_states = self.model.diffusion_connector(pred_latent)
+        if self.config.use_und_image_vae:
+            und_image_vae_feature = self.model.und_image_vae_connector(und_image_vae_latents.movedim(1, -1).reshape(-1, und_image_vae_latents.shape[-1]))
+            und_image_vae_feature_cfg = torch.stack([
+                torch.zeros_like(und_image_vae_feature),
+                und_image_vae_feature
+            ], dim=0)
+            encoder_hidden_states = torch.cat([encoder_hidden_states, und_image_vae_feature_cfg], dim=1)
+        
         for t in tqdm(self.model.noise_scheduler.timesteps, desc="Sampling images", disable=not enable_progress_bar):
 
             latent_model_input = torch.cat([latents] * 2)
@@ -254,7 +264,7 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
             # predict noise model_output
             noise_pred = self.model.sana(
                 hidden_states=latent_model_input,
-                encoder_hidden_states=self.model.diffusion_connector(pred_latent),
+                encoder_hidden_states=encoder_hidden_states,
                 timestep=t.unsqueeze(0).expand(latent_model_input.shape[0]).to(latents.device),
                 encoder_attention_mask=None
             ).sample

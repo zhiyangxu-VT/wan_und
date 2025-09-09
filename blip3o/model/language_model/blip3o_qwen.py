@@ -84,6 +84,7 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
         return_dict: Optional[bool] = None,
         modalities: Optional[List[str]] = ["image"],
         und_images: Optional[List[torch.FloatTensor]] = None,
+        und_images_for_vae: Optional[List[torch.FloatTensor]] = None,
         dpo_forward: Optional[bool] = False,
         cache_position=None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
@@ -152,10 +153,33 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
                 selected_hidden_states.append(hidden_states_filter) 
 
             selected_hidden_states = torch.stack(selected_hidden_states, dim=0)
+            
+            if self.config.use_und_image_vae:
+                multimodal_context_condition = self.model.diffusion_connector(selected_hidden_states)
+                und_image_vae_condition_list = []
+                for und_image_vae in und_images_for_vae:
+                    und_image_vae_latents = vae.encode(und_image_vae[0].unsqueeze(0)).latent
+                    if "shift_factor" in vae.config and vae.config.shift_factor is not None:
+                        und_image_vae_latents = und_image_vae_latents - vae.config.shift_factor
+                    und_image_vae_latents = und_image_vae_latents * vae.config.scaling_factor
+                    # und_image_vae_latents: [batch, 32, 32, 32], the first 32 is the feature dimension
+                    # need to flatten the last two dimensions, then map the first 32 dimension to 2304 dimension using the connector
+                    und_image_vae_latents = und_image_vae_latents.movedim(1, -1)
+                    und_image_vae_latents = und_image_vae_latents.reshape(-1, und_image_vae_latents.shape[-1])
+                    und_iamge_vae_condition = self.model.und_image_vae_connector(und_image_vae_latents)
+                    und_image_vae_condition_list.append(und_iamge_vae_condition)
+                und_image_vae_condition = torch.stack(und_image_vae_condition_list, dim=0)
+
+                diffusion_condition = torch.cat([multimodal_context_condition, und_image_vae_condition], dim=1)
+                diffusion_condition = self.mask_drop(diffusion_condition)
+            else:
+                diffusion_condition = self.model.diffusion_connector(selected_hidden_states)
+                diffusion_condition = self.mask_drop(diffusion_condition)
+            
             diffusion_pred = sana(
                 hidden_states=noisy_latents,
                 timestep=timesteps,
-                encoder_hidden_states=self.model.diffusion_connector(self.mask_drop(selected_hidden_states)),
+                encoder_hidden_states=diffusion_condition,
                 encoder_attention_mask=None,
             ).sample
 
