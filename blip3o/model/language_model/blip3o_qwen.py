@@ -123,7 +123,21 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
             if "shift_factor" in vae.config and vae.config.shift_factor is not None:
                 latents = latents - vae.config.shift_factor
             latents = latents * vae.config.scaling_factor
-            noise = torch.randn_like(latents, device=latents.device)
+            if self.config.use_und_image_vae_as_noise:
+                # assuume und_images_for_vae is a list of list of images
+                # need to concat them first to the shape of bs, 3, w, h.
+                # need to assert that only one image for one sample
+                batch_und_images_for_vae = []
+                for und_image_vae in und_images_for_vae:
+                    assert len(und_image_vae) == 1, "Only one image for one sample is currently supported"
+                    batch_und_images_for_vae.append(und_image_vae[0])
+                und_images_for_vae_concat = torch.stack(batch_und_images_for_vae, dim=0)
+                noise = vae.encode(und_images_for_vae_concat).latent
+                if "shift_factor" in vae.config and vae.config.shift_factor is not None:
+                    noise = noise - vae.config.shift_factor
+                noise = noise * vae.config.scaling_factor
+            else:
+                noise = torch.randn_like(latents, device=latents.device)
             weighting_scheme = "uniform"
             u = compute_density_for_timestep_sampling(
                 weighting_scheme=weighting_scheme,
@@ -154,7 +168,7 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
 
             selected_hidden_states = torch.stack(selected_hidden_states, dim=0)
             
-            if self.config.use_und_image_vae:
+            if self.config.use_und_image_vae and not self.config.only_use_und_image_vae_as_noise:
                 multimodal_context_condition = self.model.diffusion_connector(selected_hidden_states)
                 und_image_vae_condition_list = []
                 for und_image_vae in und_images_for_vae:

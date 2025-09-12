@@ -47,7 +47,7 @@ class blip3oMetaModel:
                 nn.Linear(2304, 2304),
                 norm,
             )
-            if self.config.use_tar_siglip_features:
+            if getattr(self.config, "use_tar_siglip_features", False):
                 norm_siglip_features_connector = RMSNorm(self.config.hidden_size, eps=1e-5, elementwise_affine=True)
                 # with torch.no_grad():
                 #     norm_siglip_features_connector.weight.fill_(math.sqrt(5.5))

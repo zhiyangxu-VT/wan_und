@@ -154,7 +154,7 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
     ):
         position_ids = kwargs.pop("position_ids", None)
         # attention_mask = (inputs != -100).long()
-        if not self.config.use_tar_siglip_features:
+        if not getattr(self.config, "use_tar_siglip_features", False):
             gen_ids = super(blip3oQwenForInferenceLM, self).generate(
                 inputs,
                 max_new_tokens=max_new_tokens,
@@ -228,13 +228,15 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
         latent_size = 32
         latent_channels = self.model.sana.config.in_channels
 
-
-        latents = randn_tensor(
-            shape=(bsz * num_images_per_prompt, latent_channels, latent_size, latent_size),
-            generator=None,
-            device=device,
-            dtype=torch.bfloat16,
-        )
+        if getattr(self.config, "use_und_image_vae_as_noise", False):
+            latents = und_image_vae_latents
+        else:
+            latents = randn_tensor(
+                shape=(bsz * num_images_per_prompt, latent_channels, latent_size, latent_size),
+                generator=None,
+                device=device,
+                dtype=torch.bfloat16,
+            )
 
         # set step values
         if isinstance(self.model.noise_scheduler, FlowMatchEulerDiscreteScheduler):
@@ -246,7 +248,7 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
         # pred_latent = torch.cat([pred_latent] * 2)
         # Convert to float32 before saving
         encoder_hidden_states = self.model.diffusion_connector(pred_latent)
-        if self.config.use_und_image_vae:
+        if getattr(self.config, "use_und_image_vae", False) and not getattr(self.config, "only_use_und_image_vae_as_noise", False):
             und_image_vae_feature = self.model.und_image_vae_connector(und_image_vae_latents.movedim(1, -1).reshape(-1, und_image_vae_latents.shape[-1]))
             und_image_vae_feature_cfg = torch.stack([
                 torch.zeros_like(und_image_vae_feature),

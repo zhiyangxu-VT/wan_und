@@ -14,6 +14,7 @@ from PIL import Image
 from transformers import AutoTokenizer
 from dataclasses import dataclass
 import copy
+from typing import Any, Optional
 
 # Add BLIP3o modules to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -44,6 +45,9 @@ class EditingConfig:
     top_k: int = 1200
     use_tar_siglip_features: bool = False
     use_und_image_vae: bool = False
+    use_und_image_vae_as_noise: bool = False
+    only_use_und_image_vae_as_noise: bool = False
+    config: Optional[argparse.Namespace] = None
 
 def set_global_seed(seed=42):
     """Set global random seed for reproducibility."""
@@ -298,66 +302,69 @@ class ImageEditingInference:
 
         return output_image[0] if output_image else None
 
-    def _generate_image_from_latents(self, pred_latent, guidance_scale=2.0, num_inference_steps=30):
-        """Generate image from latent representations using the diffusion model."""
-        import numpy as np
-        from tqdm import tqdm
-        from diffusers.utils.torch_utils import randn_tensor
+    # def _generate_image_from_latents(self, pred_latent, guidance_scale=2.0, num_inference_steps=30):
+    #     """Generate image from latent representations using the diffusion model."""
+    #     import numpy as np
+    #     from tqdm import tqdm
+    #     from diffusers.utils.torch_utils import randn_tensor
         
-        device = next(self.model.parameters()).device
+    #     device = next(self.model.parameters()).device
         
-        # Prepare unconditional latents for classifier-free guidance
-        img_hidden_states_null = torch.zeros_like(pred_latent)
-        pred_latent = torch.cat([img_hidden_states_null, pred_latent], 0)
+    #     # Prepare unconditional latents for classifier-free guidance
+    #     img_hidden_states_null = torch.zeros_like(pred_latent)
+    #     pred_latent = torch.cat([img_hidden_states_null, pred_latent], 0)
         
-        bsz = len(pred_latent) // 2
-        latent_size = 32
-        latent_channels = self.model.model.sana.config.in_channels
+    #     bsz = len(pred_latent) // 2
+    #     latent_size = 32
+    #     latent_channels = self.model.model.sana.config.in_channels
 
-        # Generate initial noise
-        latents = randn_tensor(
-            shape=(bsz, latent_channels, latent_size, latent_size),
-            generator=None,
-            device=device,
-            dtype=torch.bfloat16,
-        )
+    #     # Generate initial noise
+    #     if self.config.use_und_image_vae_as_noise:
+    #         pass
+    #     else:
+    #         latents = randn_tensor(
+    #             shape=(bsz, latent_channels, latent_size, latent_size),
+    #             generator=None,
+    #             device=device,
+    #             dtype=torch.bfloat16,
+    #         )
 
-        # Set timesteps
-        from diffusers import FlowMatchEulerDiscreteScheduler
-        if isinstance(self.model.model.noise_scheduler, FlowMatchEulerDiscreteScheduler):
-            sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
-            self.model.model.noise_scheduler.set_timesteps(num_inference_steps, sigmas=sigmas)
-        else:
-            self.model.model.noise_scheduler.set_timesteps(num_inference_steps)
+    #     # Set timesteps
+    #     from diffusers import FlowMatchEulerDiscreteScheduler
+    #     if isinstance(self.model.model.noise_scheduler, FlowMatchEulerDiscreteScheduler):
+    #         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+    #         self.model.model.noise_scheduler.set_timesteps(num_inference_steps, sigmas=sigmas)
+    #     else:
+    #         self.model.model.noise_scheduler.set_timesteps(num_inference_steps)
 
-        # Denoising loop
-        for t in tqdm(self.model.model.noise_scheduler.timesteps, desc="Generating image"):
-            latent_model_input = torch.cat([latents] * 2)
-            latent_model_input = latent_model_input.to(pred_latent.dtype)
+    #     # Denoising loop
+    #     for t in tqdm(self.model.model.noise_scheduler.timesteps, desc="Generating image"):
+    #         latent_model_input = torch.cat([latents] * 2)
+    #         latent_model_input = latent_model_input.to(pred_latent.dtype)
 
-            if hasattr(self.model.model.noise_scheduler, "scale_model_input"):
-                latent_model_input = self.model.model.noise_scheduler.scale_model_input(latent_model_input, t)
+    #         if hasattr(self.model.model.noise_scheduler, "scale_model_input"):
+    #             latent_model_input = self.model.model.noise_scheduler.scale_model_input(latent_model_input, t)
             
-            # Predict noise
-            noise_pred = self.model.model.sana(
-                hidden_states=latent_model_input,
-                encoder_hidden_states=self.model.model.diffusion_connector(pred_latent),
-                timestep=t.unsqueeze(0).expand(latent_model_input.shape[0]).to(latents.device),
-                encoder_attention_mask=None
-            ).sample
+    #         # Predict noise
+    #         noise_pred = self.model.model.sana(
+    #             hidden_states=latent_model_input,
+    #             encoder_hidden_states=self.model.model.diffusion_connector(pred_latent),
+    #             timestep=t.unsqueeze(0).expand(latent_model_input.shape[0]).to(latents.device),
+    #             encoder_attention_mask=None
+    #         ).sample
 
-            noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+    #         noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+    #         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
 
-            # Update latents
-            latents = self.model.model.noise_scheduler.step(noise_pred, t, latents).prev_sample
+    #         # Update latents
+    #         latents = self.model.model.noise_scheduler.step(noise_pred, t, latents).prev_sample
 
-        # Decode latents to images
-        samples = self.model.decode_latents(
-            latents.to(self.model.model.sana_vae.dtype) if self.model.model.sana_vae is not None else latents
-        )
+    #     # Decode latents to images
+    #     samples = self.model.decode_latents(
+    #         latents.to(self.model.model.sana_vae.dtype) if self.model.model.sana_vae is not None else latents
+    #     )
 
-        return samples
+    #     return samples
 
 
 def main():
@@ -386,6 +393,10 @@ Examples:
                        help="Use TAR SigLIP features for image generation (requires model with TAR SigLIP support)")
     parser.add_argument("--use_und_image_vae", action="store_true", 
                        help="Use UND image VAE for image generation (requires model with UND image VAE support)")
+    parser.add_argument("--use_und_image_vae_as_noise", action="store_true", 
+                       help="Use UND image VAE as noise for image generation (requires model with UND image VAE support)")
+    parser.add_argument("--only_use_und_image_vae_as_noise", action="store_true", 
+                       help="Only use UND image VAE as noise for image generation (requires model with UND image VAE support)")
     
     args = parser.parse_args()
     
@@ -413,6 +424,8 @@ Examples:
     print(f"🖥️  Device: {args.device}")
     print(f"🔧 TAR SigLIP Features: {'Enabled' if args.use_tar_siglip_features else 'Disabled'}")
     print(f"🔧 UND image VAE: {'Enabled' if args.use_und_image_vae else 'Disabled'}")
+    print(f"🔧 UND image VAE as noise: {'Enabled' if args.use_und_image_vae_as_noise else 'Disabled'}")
+    print(f"🔧 Only use UND image VAE as noise: {'Enabled' if args.only_use_und_image_vae_as_noise else 'Disabled'}")
     print("=" * 60)
     
     try:
@@ -421,7 +434,10 @@ Examples:
             model_path=args.model_path,
             device=args.device,
             use_tar_siglip_features=args.use_tar_siglip_features,
-            use_und_image_vae=args.use_und_image_vae
+            use_und_image_vae=args.use_und_image_vae,
+            use_und_image_vae_as_noise=args.use_und_image_vae_as_noise,
+            only_use_und_image_vae_as_noise=args.only_use_und_image_vae_as_noise,
+            config=args,
         )
         
         inference = ImageEditingInference(config)
