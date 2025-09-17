@@ -20,6 +20,7 @@ import numpy as np
 from tqdm import tqdm
 import PIL
 
+CONCAT_AS_HEIGHT = False
 
 def numpy_to_pil(images: np.ndarray):
     """
@@ -229,7 +230,26 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
         latent_channels = self.model.sana.config.in_channels
 
         if getattr(self.config, "use_und_image_vae_as_noise", False):
-            latents = und_image_vae_latents
+            # noise = randn_tensor(
+            #     shape=(bsz * num_images_per_prompt, latent_channels, latent_size, latent_size),
+            #     generator=None,
+            #     device=device,
+            #     dtype=torch.bfloat16,
+            # )
+            # if CONCAT_AS_HEIGHT:
+            #     latents = torch.cat([noise, und_image_vae_latents], dim=-1)
+            # else:
+            #     latents = torch.cat([noise, und_image_vae_latents], dim=1)
+            #     latents = latents.to(torch.bfloat16)
+            #     latents = self.model.und_image_vae_as_noise_connector(latents)
+            noise = randn_tensor(
+                shape=(bsz * num_images_per_prompt, latent_channels, latent_size, latent_size),
+                generator=None,
+                device=device,
+                dtype=torch.bfloat16,
+            )
+            latents = noise
+            
         else:
             latents = randn_tensor(
                 shape=(bsz * num_images_per_prompt, latent_channels, latent_size, latent_size),
@@ -258,6 +278,14 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
         
         for t in tqdm(self.model.noise_scheduler.timesteps, desc="Sampling images", disable=not enable_progress_bar):
 
+            if getattr(self.config, "use_und_image_vae_as_noise", False):
+                if CONCAT_AS_HEIGHT:
+                    latents = torch.cat([latents, und_image_vae_latents], dim=-1)
+                else:
+                    latents = torch.cat([latents, und_image_vae_latents], dim=1)
+                    latents = latents.to(torch.bfloat16)
+                    latents = self.model.und_image_vae_as_noise_connector(latents)
+                
             latent_model_input = torch.cat([latents] * 2)
             latent_model_input = latent_model_input.to(pred_latent.dtype)
 
@@ -273,11 +301,21 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
 
 
             noise_pred_uncond, noise_pred= noise_pred.chunk(2)
+            # if getattr(self.config, "use_und_image_vae_as_noise", False):
+            #     noise_pred_uncond = noise_pred_uncond[..., :noise.shape[-1]]
+            #     noise_pred = noise_pred[..., :noise.shape[-1]]
 
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred - noise_pred_uncond)
 
             # compute previous image: x_t -> x_t-1
             latents = self.model.noise_scheduler.step(noise_pred, t, latents).prev_sample
+
+            if getattr(self.config, "use_und_image_vae_as_noise", False):
+                if CONCAT_AS_HEIGHT:
+                    latents = latents[..., :noise.shape[-1]]
+                else:
+                    # concat as channel, so it should be splitting on the channel dimension,
+                    latents = latents[..., :noise.shape[1]]
 
         samples = self.decode_latents(latents.to(self.model.sana_vae.dtype) if self.model.sana_vae is not None else latents, return_tensor=return_tensor)      
 

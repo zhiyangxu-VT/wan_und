@@ -232,7 +232,20 @@ def train():
 
         for name, param in model.named_parameters():
             if "caption" in name:
-                param.requires_grad_(True)   
+                param.requires_grad_(True)
+        
+        # # Unfreeze SANA input layer if using concatenated VAE noise mode
+        # # This layer has mismatched dimensions and was randomly initialized
+        # if model.config.use_und_image_vae_as_noise:
+        #     unfrozen_layers = []
+        #     for name, param in model.named_parameters():
+        #         if "sana" in name and ("pos_embed" in name or "x_embedder" in name or "conv_in" in name or "patch_embed" in name):
+        #             param.requires_grad_(True)
+        #             unfrozen_layers.append(name)
+        #     if unfrozen_layers:
+        #         rank0_print(f"🔓 Unfrozen SANA input layers for concatenated VAE mode: {unfrozen_layers}")
+        #     else:
+        #         rank0_print("⚠️  Warning: No SANA input layers found to unfreeze for concatenated VAE mode")   
                 
 
         total_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters())

@@ -65,6 +65,11 @@ class blip3oMetaModel:
                     nn.Linear(2304, 2304),
                     norm_und_image_vae_connector,
                 )
+            if getattr(self.config, "use_und_image_vae_as_noise", False):
+                # use one layer conv2d and kernel size is 1x1, and in_channel is 64, output channel is 32
+                self.und_image_vae_as_noise_connector = nn.Sequential(
+                    nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0, bias=True),
+                )
             self.noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(config.diffusion_name_or_path, subfolder="scheduler")
             
             self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(config.diffusion_name_or_path, subfolder="scheduler")
@@ -201,6 +206,17 @@ class blip3oMetaModel:
                 self.und_image_vae_connector[0].bias.zero_()
                 self.und_image_vae_connector[2].bias.zero_()
             for p in self.und_image_vae_connector.parameters():
+                p.requires_grad = True
+
+        if getattr(self, 'und_image_vae_as_noise_connector', None) is None and self.config.use_und_image_vae_as_noise:
+            self.und_image_vae_as_noise_connector = nn.Sequential(
+                nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0, bias=True),
+            )
+        elif self.config.use_und_image_vae_as_noise:
+            with torch.no_grad():
+                nn.init.xavier_uniform_(self.und_image_vae_as_noise_connector[0].weight, gain=0.1)
+                self.und_image_vae_as_noise_connector[0].bias.zero_()
+            for p in self.und_image_vae_as_noise_connector.parameters():
                 p.requires_grad = True
 
         self.config.use_mm_proj = True

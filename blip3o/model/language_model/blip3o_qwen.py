@@ -2,6 +2,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from transformers.integrations import is_wandb_available
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -15,6 +16,9 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from blip3o.model.blip3o_arch import blip3oMetaForCausalLM, blip3oMetaModel
 from diffusers.training_utils import compute_density_for_timestep_sampling, compute_loss_weighting_for_sd3
 from blip3o.utils import rank0_print
+
+if is_wandb_available():
+    import wandb
 
 
 class blip3oQwenConfig(Qwen3Config):
@@ -132,10 +136,12 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
                     assert len(und_image_vae) == 1, "Only one image for one sample is currently supported"
                     batch_und_images_for_vae.append(und_image_vae[0])
                 und_images_for_vae_concat = torch.stack(batch_und_images_for_vae, dim=0)
-                noise = vae.encode(und_images_for_vae_concat).latent
+                ref_latents = vae.encode(und_images_for_vae_concat).latent
                 if "shift_factor" in vae.config and vae.config.shift_factor is not None:
-                    noise = noise - vae.config.shift_factor
-                noise = noise * vae.config.scaling_factor
+                    ref_latents = ref_latents - vae.config.shift_factor
+                ref_latents = ref_latents * vae.config.scaling_factor
+                noise = torch.randn_like(ref_latents, device=ref_latents.device)
+                # noise = torch.cat([noise, ref_latents], dim=1)
             else:
                 noise = torch.randn_like(latents, device=latents.device)
             weighting_scheme = "uniform"
@@ -150,6 +156,11 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
             timesteps = self.model.noise_scheduler.timesteps[indices].to(device=latents.device)
             sigmas = self.get_sigmas(timesteps, latents.device, n_dim=latents.ndim, dtype=latents.dtype)
             noisy_latents = (1.0 - sigmas) * latents + sigmas * noise
+            
+            if getattr(self.config, "use_und_image_vae_as_noise", False):
+                noisy_latents = torch.cat([noisy_latents, ref_latents], dim=1)  # Channel dimension
+                noisy_latents = noisy_latents.to(torch.bfloat16)
+                noisy_latents = self.model.und_image_vae_as_noise_connector(noisy_latents)
             
             sana = self.model.get_sana()
 
@@ -196,6 +207,10 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
                 encoder_hidden_states=diffusion_condition,
                 encoder_attention_mask=None,
             ).sample
+            
+            if getattr(self.config, "use_und_image_vae_as_noise", False):
+                # Split the channel dimension back to original latent channels
+                diffusion_pred = diffusion_pred[:, :latents.shape[1]]  # Keep only original channels
 
             target = noise - latents
             weighting = compute_loss_weighting_for_sd3(weighting_scheme=weighting_scheme, sigmas=sigmas)
@@ -204,9 +219,15 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
                 1,
             )
             diff_loss = diff_loss.mean()
-            rank0_print(f" Cross-entropy loss {loss}, Diffusion loss {diff_loss} ")
+            loss_ce = loss.detach().clone()
+            rank0_print(f" Cross-entropy loss {loss_ce}, Diffusion loss {diff_loss} ")
             loss += diff_loss
 
+        if is_wandb_available() and wandb.run is not None:
+          wandb.log({
+          "cross_entropy_loss": loss_ce.item(),
+          "diffusion_loss": diff_loss.item()
+            })
 
 
 
