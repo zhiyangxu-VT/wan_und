@@ -160,7 +160,7 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
             if getattr(self.config, "use_und_image_vae_as_noise", False):
                 noisy_latents = torch.cat([noisy_latents, ref_latents], dim=1)  # Channel dimension
                 noisy_latents = noisy_latents.to(torch.bfloat16)
-                noisy_latents = self.model.und_image_vae_as_noise_connector(noisy_latents)
+                # noisy_latents = self.model.und_image_vae_as_noise_connector(noisy_latents)
             
             sana = self.model.get_sana()
 

@@ -227,7 +227,7 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
         bsz = len(pred_latent) // 2
         # latent_size = self.config.input_size
         latent_size = 32
-        latent_channels = self.model.sana.config.in_channels
+        latent_channels = 32
 
         if getattr(self.config, "use_und_image_vae_as_noise", False):
             # noise = randn_tensor(
@@ -241,7 +241,7 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
             # else:
             #     latents = torch.cat([noise, und_image_vae_latents], dim=1)
             #     latents = latents.to(torch.bfloat16)
-            #     latents = self.model.und_image_vae_as_noise_connector(latents)
+                # latents = self.model.und_image_vae_as_noise_connector(latents)
             noise = randn_tensor(
                 shape=(bsz * num_images_per_prompt, latent_channels, latent_size, latent_size),
                 generator=None,
@@ -284,7 +284,7 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
                 else:
                     latents = torch.cat([latents, und_image_vae_latents], dim=1)
                     latents = latents.to(torch.bfloat16)
-                    latents = self.model.und_image_vae_as_noise_connector(latents)
+                    # latents = self.model.und_image_vae_as_noise_connector(latents)
                 
             latent_model_input = torch.cat([latents] * 2)
             latent_model_input = latent_model_input.to(pred_latent.dtype)
@@ -315,7 +315,7 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
                     latents = latents[..., :noise.shape[-1]]
                 else:
                     # concat as channel, so it should be splitting on the channel dimension,
-                    latents = latents[..., :noise.shape[1]]
+                    latents = latents[:, :noise.shape[1], :, :]
 
         samples = self.decode_latents(latents.to(self.model.sana_vae.dtype) if self.model.sana_vae is not None else latents, return_tensor=return_tensor)      
 

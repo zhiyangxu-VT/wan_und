@@ -139,6 +139,29 @@ def get_model(model_args, training_args):
         torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
         low_cpu_mem_usage=False,
         **customized_kwargs)
+    
+    # reinitialize the sana part, change the in_channel and out_channel to 64, and reinitialize the sana part
+    if model_args.use_und_image_vae_as_noise:
+        rank0_print(f"Reinitializing Sana with 64 channels...")
+        sana = model.get_model().get_sana()
+        config_new_sana = dict(sana.config)
+        config_new_sana['in_channels'] = 64
+        config_new_sana['out_channels'] = 64
+        # rebuild the sana part with the new config and load the matched old weights
+        from diffusers import SanaTransformer2DModel
+        sana_new = SanaTransformer2DModel.from_config(config_new_sana, torch_dtype=torch.bfloat16)
+        # filter out the shape-mismatched parameters and the proj_out and patch_embed parameters
+        filtered_state_dict = {
+            name: param for name, param in sana.state_dict().items()
+            if not ("proj_out" in name or "patch_embed" in name)
+        }
+        load_result = sana_new.load_state_dict(filtered_state_dict, strict=False)
+        print(f"Missing keys:")
+        print(load_result.missing_keys)
+        print(f"Unexpected keys:")
+        print(load_result.unexpected_keys)
+        model.get_model().sana = sana_new
+    
     return model
 
 
@@ -233,6 +256,11 @@ def train():
         for name, param in model.named_parameters():
             if "caption" in name:
                 param.requires_grad_(True)
+        
+        if model.config.use_und_image_vae_as_noise:
+            for name, param in model.named_parameters():
+                if "sana" in name and ("sana.patch_embed" in name or "sana.proj_out" in name):
+                    param.requires_grad_(True)
         
         # # Unfreeze SANA input layer if using concatenated VAE noise mode
         # # This layer has mismatched dimensions and was randomly initialized
