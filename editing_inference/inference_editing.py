@@ -60,8 +60,12 @@ def set_global_seed(seed=42):
 
 def create_editing_prompt(instruction, has_input_image=True):
     """Create conversation template for image editing matching training format."""
+    # messages = [
+    #     {"role": "system", "content": "You are a helpful assistant."},
+    # ]
+    from blip3o.data.dataset import SYSTEM_PROMPT
     messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "system", "content": SYSTEM_PROMPT},
     ]
     
     if has_input_image:

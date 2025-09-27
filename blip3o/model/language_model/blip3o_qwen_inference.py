@@ -20,7 +20,7 @@ import numpy as np
 from tqdm import tqdm
 import PIL
 
-CONCAT_AS_HEIGHT = False
+CONCAT_AS_HEIGHT = True
 
 def numpy_to_pil(images: np.ndarray):
     """
@@ -208,6 +208,18 @@ class blip3oQwenForInferenceLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
         start_pos = (gen_ids == self.config.image_start_tag_id).float().argmax(dim=1)   
         end_pos   = (gen_ids == self.config.image_end_tag_id).float().argmax(dim=1)   
 
+        # create boolean masks
+        # start_mask = (gen_ids == self.config.image_start_tag_id)
+        # end_mask   = (gen_ids == self.config.image_end_tag_id)
+
+        # # flip along sequence dimension, find first occurrence in reversed sequence
+        # start_pos_last = (start_mask.flip(dims=[1]).int().argmax(dim=1))
+        # end_pos_last   = (end_mask.flip(dims=[1]).int().argmax(dim=1))
+
+        # # convert back to original indices
+        # seq_len = gen_ids.size(1)
+        # start_pos = seq_len - 1 - start_pos_last
+        # end_pos_last   = seq_len - 1 - end_pos_last
 
         selected_hidden_states = []                       
         for b in range(hidden_states.size(0)):          

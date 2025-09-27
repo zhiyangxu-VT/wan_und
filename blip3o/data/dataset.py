@@ -30,6 +30,40 @@ from blip3o.constants import (
 )
 from blip3o.utils import rank0_print
 
+SYSTEM_PROMPT = "You are a helpful assistant."
+'''
+SYSTEM_PROMPT = """You are a help multimodal assistant for image generation and editing.
+
+## Output Format
+- Always wrap outputs with <im_start> and <im_end>.
+- Inside, always produce the fixed number of image tokens.
+- Never output any natural language or reasoning outside <im_start> ... <im_end>.
+
+## Tasks
+1. Text-to-Image Generation
+   - Input: Instruction text only.
+   - Output: <im_start>[fixed number of new image tokens]<im_end>
+
+2. Reference-based Generation (Subject-driven)
+   - Input: Instruction text first, followed by one or more reference images (image token ids).
+   - Output: <im_start>[fixed number of new image tokens based on instruction + reference]<im_end>
+
+3. Image Editing
+   - Input: Instruction text first, followed by a reference image (image token ids).
+   - Output: <im_start>[reference tokens for unchanged regions + new tokens for edited regions]<im_end>
+
+4. Reconstruction
+   - Input: Instruction is always "Keep the image unchanged." followed by a reference image (image token ids).
+   - Output: <im_start>[exact copy of the reference image tokens]<im_end>
+
+## Rules
+- Always output exactly the fixed number of image tokens.
+- Always start with <im_start> and end with <im_end>.
+- For editing: unchanged regions = copied reference tokens.
+- For reconstruction: output = exact copy of reference tokens.
+"""
+'''
+
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -42,6 +76,7 @@ X2I2_BASE_IMAGE_DIRS = {
     "X2I_x2i2_video_icgen": "/fsx/home/lxue/repos/datasets/X2I2/images/video_icgen",
     "X2I_x2i2_video_interleave": "/fsx/home/lxue/repos/datasets/X2I2/images/video_interleave/x_mv",
     "X2I_sharegpt4o": "/fsx/home/lxue/repos/datasets/sharegpt4o_all/x2i",
+    "X2I_nano_banana": "/fsx/sfr/data/lxue/nano_banana",
     # "X2I_sharegpt4o_t2i": "/fsx/home/lxue/repos/datasets/sharegpt4o_t2i/sharegpt4o",
 }
 
@@ -113,6 +148,8 @@ def preprocess_multimodal_x2i(sources, data_args) -> Dict:
 def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, max_len=2048, system_message: str = "You are a helpful assistant.") -> Dict:
     # roles = {"human": "<|im_start|>user", "gpt": "<|im_start|>assistant"}
     roles = {"human": "user", "gpt": "assistant"}
+    
+    system_message = SYSTEM_PROMPT
 
     #tokenizer = copy.deepcopy(tokenizer)
     # When there is actually an image, we add the image tokens as a special token
@@ -198,6 +235,8 @@ class LazySupervisedMixDataset(Dataset):
     def __init__(
         self,
         data_list: List[str],
+        data_list_weights: List[float],
+        subsample_ratio: float,
         tokenizer: transformers.PreTrainedTokenizer,
         data_args,
     ):
@@ -205,10 +244,14 @@ class LazySupervisedMixDataset(Dataset):
 
         self.data_args = data_args
         self.data_args.n_und_query = 729
+        self.data_list = self.data_list
+        self.data_list_weights = self.data_list_weights
+        self.subsample_ratio = subsample_ratio
+        assert len(self.data_list) == len(self.data_list_weights), "The number of datasets and weights must be the same"
         list_data_dict = []
 
         # assume the dataset is a list of paths
-        for dataset_path in data_list:
+        for dataset_path, dataset_weight in zip(self.data_list, self.data_list_weights):
             if 'metaquery' in dataset_path.lower():
 
                 train_dataset = load_from_disk(dataset_path, keep_in_memory=False)
@@ -234,7 +277,8 @@ class LazySupervisedMixDataset(Dataset):
                     train_dataset = train_dataset.rename_column("image", "image_path")
                     train_dataset = train_dataset.rename_column("input_images", "input_images_paths")
                     train_dataset = train_dataset.map(map_reflect, batched=True, batch_size=2000, num_proc=1)
-                    print("loaded reflect dataset with ", len(train_dataset), " samples", "from ", dataset_path)
+                    train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
+                    rank0_print("loaded reflect dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
                 elif "inpaint" in dataset_path.lower():
                     train_dataset = train_dataset.rename_column("output_image", "image_path")
                     train_dataset = train_dataset.rename_column("instruction", "txt")
@@ -243,8 +287,8 @@ class LazySupervisedMixDataset(Dataset):
                     train_dataset = train_dataset.rename_column("input_images", "input_images_paths")
                     train_dataset = train_dataset.add_column('input_images', len(train_dataset) * [[]])
                     repeat_time = 10
-                    train_dataset = concatenate_datasets([train_dataset] * repeat_time)
-                    print("loaded inpaint dataset with ", len(train_dataset), " samples", "from ", dataset_path)
+                    train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
+                    rank0_print("loaded inpaint dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
                 elif "video_edit" in dataset_path.lower():
                     # train_dataset = train_dataset.add_column('type', len(train_dataset) * ['X2I_x2i2_video_edit'])
                     # rename the colume of output_image to image and the instruction to txt
@@ -258,7 +302,9 @@ class LazySupervisedMixDataset(Dataset):
                             'input_images': [[]] * len(batch["image_path"])
                         }
                     train_dataset = train_dataset.map(map_video_edit, batched=True, batch_size=2000, num_proc=1)
-                    print("loaded video edit dataset with ", len(train_dataset), " samples", "from ", dataset_path)
+                    repeat_time = 1
+                    train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
+                    rank0_print("loaded video edit dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
                 elif "video_icedit" in dataset_path.lower():
                     train_dataset = train_dataset.rename_column("instruction", "txt")
                     train_dataset = train_dataset.rename_column("output_image", "image_path")
@@ -270,7 +316,9 @@ class LazySupervisedMixDataset(Dataset):
                             'input_images': [[]] * len(batch["image_path"])
                         }
                     train_dataset = train_dataset.map(map_video_icedit, batched=True, batch_size=2000, num_proc=1)
-                    print("loaded video icedit dataset with ", len(train_dataset), " samples", "from ", dataset_path)
+                    repeat_time = 10
+                    train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
+                    rank0_print("loaded video icedit dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
                 # icgen has both long and short versions
                 elif "video_icgen" in dataset_path.lower():
                     train_dataset = train_dataset.rename_column("instruction", "txt")
@@ -283,7 +331,8 @@ class LazySupervisedMixDataset(Dataset):
                             'input_images': [[]] * len(batch["image_path"])
                         }
                     train_dataset = train_dataset.map(map_video_icgen, batched=True, batch_size=2000, num_proc=1)
-                    print("loaded video icgen dataset with ", len(train_dataset), " samples", "from ", dataset_path)
+                    train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
+                    rank0_print("loaded video icgen dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
                 #TODO: interleaved data instruction contains the image token, needs some more processing
                 elif "video_interleave" in dataset_path.lower():
                     train_dataset = train_dataset.add_column('type', len(train_dataset) * ['X2I_x2i2_video_interleave'])
@@ -306,9 +355,9 @@ class LazySupervisedMixDataset(Dataset):
                     # train_dataset = train_dataset.remove_columns([col for col in train_dataset.column_names if not col in (
                     #     ["image", "type", "image_path", "input_images", "input_images_paths"])])
                     repeat_time = 10
-                    train_dataset = concatenate_datasets([train_dataset] * repeat_time)
+                    train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
 
-                    print("loaded BLIP3o-60k dataset with ", len(train_dataset), " samples", "from ", dataset_path)
+                    rank0_print("loaded BLIP3o-60k dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
                 else:
                     raise ValueError(f"No TAR files found in {dataset_path}")
             elif 'sharegpt4o' in dataset_path.lower():
@@ -328,8 +377,8 @@ class LazySupervisedMixDataset(Dataset):
                     # train_dataset = train_dataset.remove_columns([col for col in train_dataset.column_names if not col in (
                     #     ["image", "txt", "type", "image_path", "input_images", "input_images_paths"])])
                     repeat_time = 10
-                    train_dataset = concatenate_datasets([train_dataset] * repeat_time)
-                    print("loaded sharegpt4o t2i dataset with ", len(train_dataset), " samples", "from ", dataset_path)
+                    train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
+                    rank0_print("loaded sharegpt4o t2i dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
 
                 elif 'x2i' in dataset_path.lower():
                     # train_dataset = load_dataset("webdataset", data_files=tar_files, split="train", num_proc=1, cache_dir='/fsx/home/lxue/repos/BLIP3o/edit_data/sharegpt4o_x2i')
@@ -346,8 +395,19 @@ class LazySupervisedMixDataset(Dataset):
                     # train_dataset = train_dataset.remove_columns([col for col in train_dataset.column_names if not col in (
                     #     ["image", "txt", "type", "image_path", "input_images", "input_images_paths"])])
                     repeat_time = 10
-                    train_dataset = concatenate_datasets([train_dataset] * repeat_time)
-                    print("loaded sharegpt4o x2i dataset with ", len(train_dataset), " samples", "from ", dataset_path)
+                    train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
+                    rank0_print("loaded sharegpt4o x2i dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
+            elif 'nano_banana' in dataset_path.lower():
+                train_dataset = load_dataset("json", data_files=dataset_path, split="train", num_proc=1)
+                train_dataset = train_dataset.rename_column("output_image", "image_path")
+                train_dataset = train_dataset.rename_column("input_images", "input_images_paths")
+                train_dataset = train_dataset.add_column('input_images', len(train_dataset) * [[]])
+                train_dataset = train_dataset.rename_column("instruction", "txt")
+                train_dataset = train_dataset.add_column('type', len(train_dataset) * ['X2I_nano_banana'])
+                train_dataset = train_dataset.add_column('image', len(train_dataset) * [None])
+                repeat_time = 10
+                train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
+                rank0_print("loaded nano banana dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
             else:
                 # assume the dataset is a glob of tar files, like the ones used in the original blip3o
                 data_files = sorted(glob.glob(dataset_path))
@@ -357,26 +417,33 @@ class LazySupervisedMixDataset(Dataset):
                 train_dataset = train_dataset.add_column('image_path', len(train_dataset) * [None])
                 train_dataset = train_dataset.add_column('input_images', len(train_dataset) * [[]])
                 train_dataset = train_dataset.add_column('input_images_paths', len(train_dataset) * [None])
+                train_dataset = concatenate_datasets([train_dataset] * dataset_weight)
+                rank0_print("loaded other dataset with ", len(train_dataset), " samples", "from ", dataset_path, "with weight ", dataset_weight)
             
             train_dataset = train_dataset.remove_columns([col for col in train_dataset.column_names if not col in (
                 ["image", "txt", "type", "image_path", "input_images", "input_images_paths"])])
 
 
-            print(f"finish loading image {len(train_dataset)}")
+            # rank0_print(f"finish loading image {len(train_dataset)} from {dataset_path} with weight {dataset_weight}")
             list_data_dict.append(train_dataset)
 
-        print(f"Total samples: {len(train_dataset)}")
-        print(f"Features: {train_dataset.features}")
+        # rank0_print(f"Total samples for the entire training: {len(train_dataset)}")
+        rank0_print(f"Features: {train_dataset.features}")
 
         if len(list_data_dict) > 1:
+            rank0_print(f"concatenating {len(list_data_dict)} datasets")
             list_data_dict = concatenate_datasets(list_data_dict)
         else:
             list_data_dict = list_data_dict[0]
         list_data_dict = list_data_dict.shuffle(seed=42)
+        
+        if self.subsample_ratio < 1.0:
+            list_data_dict = list_data_dict.select(range(int(len(list_data_dict) * self.subsample_ratio)))
+        
         # random sample 2000000 samples
         # list_data_dict = list_data_dict.select(range(2000000))
 
-        rank0_print(f"Totoal number of training instance: {len(list_data_dict)}")
+        rank0_print(f"Totoal concatenated number of training instance for the entire training: {len(list_data_dict)}")
         self.tokenizer = tokenizer
         self.list_data_dict = list_data_dict
         self.modality = torch.tensor(0) # 0 is for und task, 1 is for gen task
@@ -614,6 +681,6 @@ def get_dataset_cls(name):
 def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     dataset_cls = get_dataset_cls(data_args.dataset_cls)
-    train_dataset = dataset_cls(tokenizer=tokenizer, data_list=data_args.data_list, data_args=data_args)
+    train_dataset = dataset_cls(tokenizer=tokenizer, data_list=data_args.data_list, data_list_weights=data_args.data_list_weights, subsample_ratio=data_args.subsample_ratio, data_args=data_args)
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)

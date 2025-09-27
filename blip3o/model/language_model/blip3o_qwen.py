@@ -17,6 +17,8 @@ from blip3o.model.blip3o_arch import blip3oMetaForCausalLM, blip3oMetaModel
 from diffusers.training_utils import compute_density_for_timestep_sampling, compute_loss_weighting_for_sd3
 from blip3o.utils import rank0_print
 
+CONCAT_AS_HEIGHT = True
+
 if is_wandb_available():
     import wandb
 
@@ -120,6 +122,37 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
             loss = loss_fct(shift_logits, shift_labels)
     
 
+        # if labels is not None:
+        #     shift_logits = logits[..., :-1, :].contiguous()    # (B, L-1, V)
+        #     shift_labels = labels[..., 1:].contiguous()        # (B, L-1)
+
+        #     batch_size, seq_len = shift_labels.size()
+        #     mask = torch.zeros_like(shift_labels, dtype=torch.bool)
+
+        #     for b in range(batch_size):
+        #         label_row = labels[b]
+
+        #         # find last occurrence
+        #         start_mask = (label_row == self.config.image_start_tag_id)
+        #         end_mask   = (label_row == self.config.image_end_tag_id)
+
+        #         if start_mask.any() and end_mask.any():
+        #             s = (label_row.size(0) - 1) - torch.flip(start_mask, dims=[0]).float().argmax().item()
+        #             e = (label_row.size(0) - 1) - torch.flip(end_mask,   dims=[0]).float().argmax().item()
+
+        #             if e > s:
+        #                 # shift alignment; inclusive of both s and e
+        #                 mask[b, s-1:e] = True
+
+        #     # ignore tokens outside the region
+        #     masked_labels = shift_labels.masked_fill(~mask, -100)
+
+        #     loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+        #     shift_logits = shift_logits.view(-1, self.config.vocab_size)
+        #     masked_labels = masked_labels.view(-1).to(shift_logits.device)
+
+        #     loss = loss_fct(shift_logits, masked_labels)
+
 
         if target_images is not None:
             vae = self.model.get_sana_vae()
@@ -158,7 +191,10 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
             noisy_latents = (1.0 - sigmas) * latents + sigmas * noise
             
             if getattr(self.config, "use_und_image_vae_as_noise", False):
-                noisy_latents = torch.cat([noisy_latents, ref_latents], dim=1)  # Channel dimension
+                if CONCAT_AS_HEIGHT:
+                    noisy_latents = torch.cat([noisy_latents, ref_latents], dim=-1)
+                else:
+                    noisy_latents = torch.cat([noisy_latents, ref_latents], dim=1)  # Channel dimension
                 noisy_latents = noisy_latents.to(torch.bfloat16)
                 # noisy_latents = self.model.und_image_vae_as_noise_connector(noisy_latents)
             
@@ -178,6 +214,34 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
                 selected_hidden_states.append(hidden_states_filter) 
 
             selected_hidden_states = torch.stack(selected_hidden_states, dim=0)
+            # selected_hidden_states = []
+            # for b in range(hidden_states.size(0)):
+            #     label_row = labels[b]
+
+            #     # find *last* start/end
+            #     start_mask = (label_row == self.config.image_start_tag_id)
+            #     end_mask   = (label_row == self.config.image_end_tag_id)
+
+            #     if start_mask.any() and end_mask.any():
+            #         s = (label_row.size(0) - 1) - torch.flip(start_mask, dims=[0]).float().argmax().item()
+            #         e = (label_row.size(0) - 1) - torch.flip(end_mask,   dims=[0]).float().argmax().item()
+
+            #         if e > s:
+            #             # pick content strictly between <image_start> and <image_end>
+            #             hidden_states_filter = hidden_states[b, s+1:e, :]
+            #         else:
+            #             hidden_states_filter = hidden_states[b, -730:, :]
+            #     else:
+            #         # fallback if no markers
+            #         hidden_states_filter = hidden_states[b, -730:, :]
+
+            #     # pad/trim if not exactly 730
+            #     if hidden_states_filter.size(0) != 730:
+            #         hidden_states_filter = hidden_states[b, -730:, :]
+
+            #     selected_hidden_states.append(hidden_states_filter)
+
+            # selected_hidden_states = torch.stack(selected_hidden_states, dim=0)
             
             if self.config.use_und_image_vae and not self.config.only_use_und_image_vae_as_noise:
                 multimodal_context_condition = self.model.diffusion_connector(selected_hidden_states)
@@ -209,8 +273,12 @@ class blip3oQwenForCausalLM(Qwen3ForCausalLM, blip3oMetaForCausalLM):
             ).sample
             
             if getattr(self.config, "use_und_image_vae_as_noise", False):
-                # Split the channel dimension back to original latent channels
-                diffusion_pred = diffusion_pred[:, :latents.shape[1]]  # Keep only original channels
+                if CONCAT_AS_HEIGHT:
+                    diffusion_pred = diffusion_pred[..., :latents.shape[-1]]
+                else:
+                    # Split the channel dimension back to original latent channels
+                    diffusion_pred = diffusion_pred[:, :latents.shape[1]]  # Keep only original channels
+                
 
             target = noise - latents
             weighting = compute_loss_weighting_for_sd3(weighting_scheme=weighting_scheme, sigmas=sigmas)

@@ -49,6 +49,8 @@ class ModelArguments:
 @dataclass
 class DataArguments:
     data_list: str = field(default=None, metadata={"help": "Comma-separated list of dataset paths."})
+    data_list_weights: str = field(default=None, metadata={"help": "Comma-separated list of dataset weights."})
+    subsample_ratio: float = field(default=1.0, metadata={"help": "Subsample ratio for the entire training."})
     lazy_preprocess: bool = False
     is_multimodal: bool = False
     early_mix_text: bool = False
@@ -59,6 +61,11 @@ class DataArguments:
     def __post_init__(self):
         if self.data_list is not None:
             self.data_list = [path.strip() for path in self.data_list.split(',')]
+            if self.data_list_weights is not None:
+                assert len(self.data_list) == len(self.data_list_weights), "The number of datasets and weights must be the same"
+                self.data_list_weights = [float(weight.strip()) for weight in self.data_list_weights.split(',')]
+            else:
+                self.data_list_weights = [1.0] * len(self.data_list)
 
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
@@ -141,7 +148,8 @@ def get_model(model_args, training_args):
         **customized_kwargs)
     
     # reinitialize the sana part, change the in_channel and out_channel to 64, and reinitialize the sana part
-    if model_args.use_und_image_vae_as_noise:
+    from blip3o.model.language_model.blip3o_qwen import CONCAT_AS_HEIGHT
+    if model_args.use_und_image_vae_as_noise and not CONCAT_AS_HEIGHT:
         rank0_print(f"Reinitializing Sana with 64 channels...")
         sana = model.get_model().get_sana()
         config_new_sana = dict(sana.config)
@@ -156,10 +164,10 @@ def get_model(model_args, training_args):
             if not ("proj_out" in name or "patch_embed" in name)
         }
         load_result = sana_new.load_state_dict(filtered_state_dict, strict=False)
-        print(f"Missing keys:")
-        print(load_result.missing_keys)
-        print(f"Unexpected keys:")
-        print(load_result.unexpected_keys)
+        rank0_print(f"Missing keys:")
+        rank0_print(load_result.missing_keys)
+        rank0_print(f"Unexpected keys:")
+        rank0_print(load_result.unexpected_keys)
         model.get_model().sana = sana_new
     
     return model
@@ -261,6 +269,11 @@ def train():
             for name, param in model.named_parameters():
                 if "sana" in name and ("sana.patch_embed" in name or "sana.proj_out" in name):
                     param.requires_grad_(True)
+            
+        # if True:
+        #     for name, param in model.named_parameters():
+        #         if "sana.transformer_blocks" in name:
+        #             param.requires_grad_(True)
         
         # # Unfreeze SANA input layer if using concatenated VAE noise mode
         # # This layer has mismatched dimensions and was randomly initialized
