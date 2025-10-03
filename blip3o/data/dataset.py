@@ -244,8 +244,8 @@ class LazySupervisedMixDataset(Dataset):
 
         self.data_args = data_args
         self.data_args.n_und_query = 729
-        self.data_list = self.data_list
-        self.data_list_weights = self.data_list_weights
+        self.data_list = data_list
+        self.data_list_weights = data_list_weights
         self.subsample_ratio = subsample_ratio
         assert len(self.data_list) == len(self.data_list_weights), "The number of datasets and weights must be the same"
         list_data_dict = []
@@ -431,8 +431,8 @@ class LazySupervisedMixDataset(Dataset):
         rank0_print(f"Features: {train_dataset.features}")
 
         if len(list_data_dict) > 1:
-            rank0_print(f"concatenating {len(list_data_dict)} datasets")
             list_data_dict = concatenate_datasets(list_data_dict)
+            rank0_print(f"concatenated {len(list_data_dict)} datasets and got {len(list_data_dict)} samples")
         else:
             list_data_dict = list_data_dict[0]
         list_data_dict = list_data_dict.shuffle(seed=42)

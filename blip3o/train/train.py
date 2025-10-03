@@ -62,10 +62,10 @@ class DataArguments:
         if self.data_list is not None:
             self.data_list = [path.strip() for path in self.data_list.split(',')]
             if self.data_list_weights is not None:
-                assert len(self.data_list) == len(self.data_list_weights), "The number of datasets and weights must be the same"
-                self.data_list_weights = [float(weight.strip()) for weight in self.data_list_weights.split(',')]
+                self.data_list_weights = [int(weight.strip()) for weight in self.data_list_weights.split(',')]
+                assert len(self.data_list) == len(self.data_list_weights), "The number of datasets and weights must be the same but got {len(self.data_list)} and {len(self.data_list_weights)}"
             else:
-                self.data_list_weights = [1.0] * len(self.data_list)
+                self.data_list_weights = [int(1.0)] * len(self.data_list)
 
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
