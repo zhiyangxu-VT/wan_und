@@ -1,11 +1,11 @@
 
-# BLIP3o-NEXT 
+# BLIP3o-NEXT-edit
 
 </tiny><a href="https://jiuhaichen.github.io/BLIP3o-NEXT.github.io/" style="font-weight: normal;">Project Page</a></tiny>
 
 
 <p align="center">
-<img src="figure/blip3o_next.png" width="1342">
+<img src="figure/edit_arch.png" width="1342">
 </p>
 
 
