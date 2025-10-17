@@ -15,7 +15,7 @@
 
  **Fully Open-Source:**
   - **Image Editing Data:** [TODO]()
-  - **Model Weights (3B):** [TODO]()
+  - **Model Weights (3B):** [BLIP3o-NEXT-edit-VAE-Condition](https://huggingface.co/BLIP3o/BLIP3o-NEXT-edit-VAE)
 
 
 🔥 Welcome to discuss with us if you have any questions.
