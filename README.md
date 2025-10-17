@@ -29,7 +29,7 @@ or Wechat
 
 
 
-Install package for pretraining and instruction tuning
+Install package for image editing training
 ```Shell
 conda create -n blip3o-next python=3.11 -y
 conda activate blip3o-next
