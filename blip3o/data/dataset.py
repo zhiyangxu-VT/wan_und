@@ -69,15 +69,13 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 X2I2_BASE_IMAGE_DIRS = {
-    # "X2I_x2i2_reflect": "/fsx/home/lxue/repos/datasets/X2I2/images/reflect/reflect",
-    "X2I_x2i2_inpaint": "/fsx/home/lxue/repos/datasets/X2I2_latest/X2I2/images/inpaint_edit",
-    "X2I_x2i2_video_edit": "/fsx/home/lxue/repos/datasets/X2I2/images/video_edit",
-    "X2I_x2i2_video_icedit": "/fsx/home/lxue/repos/datasets/X2I2/images/video_icedit/edit_ip",
-    "X2I_x2i2_video_icgen": "/fsx/home/lxue/repos/datasets/X2I2/images/video_icgen",
-    "X2I_x2i2_video_interleave": "/fsx/home/lxue/repos/datasets/X2I2/images/video_interleave/x_mv",
-    "X2I_sharegpt4o": "/fsx/home/lxue/repos/datasets/sharegpt4o_all/x2i",
-    "X2I_nano_banana": "/fsx/sfr/data/lxue/nano_banana",
-    # "X2I_sharegpt4o_t2i": "/fsx/home/lxue/repos/datasets/sharegpt4o_t2i/sharegpt4o",
+    "X2I_x2i2_inpaint": "/path_to_x2i2_images/images/inpaint_edit",
+    "X2I_x2i2_video_edit": "/path_to_x2i2_images/images/video_edit",
+    "X2I_x2i2_video_icedit": "/path_to_x2i2_images/images/video_icedit/edit_ip",
+    "X2I_x2i2_video_icgen": "/path_to_x2i2_images/images/video_icgen",
+    "X2I_x2i2_video_interleave": "/path_to_x2i2_images/images/video_interleave/x_mv",
+    "X2I_sharegpt4o": "/path_to_sharegpt4o_images/x2i",
+    "X2I_nano_banana": "/path_to_nano_banana_images",
 }
 
 ## target transform for sana
