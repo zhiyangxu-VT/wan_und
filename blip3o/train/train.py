@@ -69,6 +69,9 @@ class ModelArguments:
     n_query: Optional[int] = field(default=729)  # clip 576, siglip 729
     n_und_query: Optional[int] = field(default=729)  # clip 576, siglip 729
     gen_pooling: Optional[str] = field(default="all")  # options are: pool2d_3, pool2d_9, seq_3, seq_9, seq_27
+    video_diffusion_backend: Optional[str] = field(default=None)
+    wan_model_path: Optional[str] = field(default=None)
+    train_wan_dit: bool = field(default=False)
 
 
 @dataclass
@@ -81,6 +84,11 @@ class DataArguments:
     shortcaption_image_folder: Optional[str] = field(default=None)
     data_type: Optional[str] = field(default="mix")
     image_aspect_ratio: str = "square"
+    video_metadata_path: Optional[str] = field(default=None)
+    video_folder: Optional[str] = field(default=None)
+    num_frames: int = field(default=49)
+    video_height: int = field(default=480)
+    video_width: int = field(default=832)
 
 
 @dataclass
@@ -763,6 +771,76 @@ class LazySupervisedMixDataset(Dataset):
             return data_dict
 
 
+class LazyVideoDataset(Dataset):
+    def __init__(self, tokenizer, data_path, data_args):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.data_args = data_args
+        with open(data_path, "r", encoding="utf-8") as f:
+            self.list_data_dict = [json.loads(line) for line in f if line.strip()]
+
+        self.video_resize = T.Compose([
+            T.Resize((data_args.video_height, data_args.video_width), interpolation=InterpolationMode.BICUBIC),
+        ])
+
+    def __len__(self):
+        return len(self.list_data_dict)
+
+    def _resolve_path(self, path):
+        if path is None:
+            return None
+        base = self.data_args.video_folder
+        return os.path.join(base, path) if base and not os.path.isabs(path) else path
+
+    def _load_image(self, path):
+        img = Image.open(path).convert("RGB")
+        img = self.video_resize(img)
+        tensor = T.ToTensor()(img) * 2 - 1
+        return tensor
+
+    def _load_video_frames(self, item):
+        if "video_frames" in item:
+            frame_paths = [self._resolve_path(p) for p in item["video_frames"]]
+        else:
+            video_dir = self._resolve_path(item["video"])
+            frame_paths = sorted(Path(video_dir).glob("*"))
+            frame_paths = [str(p) for p in frame_paths]
+        if not frame_paths:
+            raise ValueError("No frames found for video sample")
+
+        num_frames = self.data_args.num_frames
+        if len(frame_paths) >= num_frames:
+            indices = torch.linspace(0, len(frame_paths) - 1, num_frames).long().tolist()
+            frame_paths = [frame_paths[i] for i in indices]
+        else:
+            frame_paths = frame_paths + [frame_paths[-1]] * (num_frames - len(frame_paths))
+
+        frames = [self._load_image(path) for path in frame_paths]
+        video = torch.stack(frames, dim=0).permute(1, 0, 2, 3).contiguous()
+        return video
+
+    def __getitem__(self, i):
+        item = self.list_data_dict[i]
+        prompt = item.get("prompt", "")
+        sources = [{"from": "human", "value": prompt}, {"from": "gpt", "value": ""}]
+
+        data_dict = preprocess(sources, self.tokenizer, has_image=False)
+        if isinstance(i, int):
+            data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
+
+        gen_video = self._load_video_frames(item)
+        input_image_path = self._resolve_path(item.get("input_image"))
+        if input_image_path:
+            input_image = self._load_image(input_image_path)
+        else:
+            input_image = gen_video[:, 0]
+
+        data_dict["gen_video"] = gen_video
+        data_dict["input_image"] = input_image
+        data_dict["ids"] = item.get("id", "unk")
+        return data_dict
+
+
 @dataclass
 class DataCollatorForSupervisedDataset(object):
     """Collate examples for supervised fine-tuning."""
@@ -805,6 +883,8 @@ class DataCollatorForSupervisedDataset(object):
         batch_gen_images = []
         batch_und_images = []
         batch_grid_thw = []
+        batch_gen_videos = []
+        batch_input_images = []
 
         for instance in instances:
             if "gen_image" in instance:
@@ -834,6 +914,22 @@ class DataCollatorForSupervisedDataset(object):
             batch["und_image"] = None
             batch["grid_thw"] = None
 
+        for instance in instances:
+            if "gen_video" in instance:
+                batch_gen_videos.append(instance["gen_video"])
+            if "input_image" in instance:
+                batch_input_images.append(instance["input_image"])
+
+        if batch_gen_videos:
+            batch["gen_video"] = torch.stack(batch_gen_videos, dim=0)
+        else:
+            batch["gen_video"] = None
+
+        if batch_input_images:
+            batch["input_image"] = torch.stack(batch_input_images, dim=0)
+        else:
+            batch["input_image"] = None
+
         batch["ids"] = ids
 
         batch["i_s_pos"] = i_s_pos
@@ -845,6 +941,8 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
 
     if data_args.data_type == "mix":
         train_dataset = LazySupervisedMixDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
+    elif data_args.data_type == "video":
+        train_dataset = LazyVideoDataset(tokenizer=tokenizer, data_path=data_args.video_metadata_path, data_args=data_args)
     else:
         raise ValueError("Unknown data type. Please check the Dataloader type.")
 
@@ -888,8 +986,11 @@ def train(attn_implementation=None):
             )
         )
         
+    use_wan = model_args.video_diffusion_backend == "wan2.2-ti2v-5b"
     ## if there exists vision tower for image understanind, we will load LLaMA LLM, otherwise will load Qwen-VL
     if model_args.vision_tower is not None:
+        if use_wan:
+            raise ValueError("WAN video diffusion backend currently requires the Qwen backbone (vision_tower must be None).")
         model = blip3oLlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
@@ -898,13 +999,22 @@ def train(attn_implementation=None):
             **bnb_model_from_pretrained_args,
         )
     else:
-        model = blip3oQwenForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            attn_implementation=attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-            **bnb_model_from_pretrained_args,
-        )
+        if use_wan:
+            model = blip3oQwenForCausalLMWan.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                **bnb_model_from_pretrained_args,
+            )
+        else:
+            model = blip3oQwenForCausalLM.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                **bnb_model_from_pretrained_args,
+            )
 
     model.config.use_cache = False
 
@@ -960,6 +1070,16 @@ def train(attn_implementation=None):
     # if model_args.vision_tower is not None:
     model.get_model().initialize_vision_modules(model_args=model_args, fsdp=training_args.fsdp)
 
+    if use_wan:
+        if model_args.wan_model_path is None:
+            raise ValueError("wan_model_path must be set when video_diffusion_backend is wan2.2-ti2v-5b")
+        model.initialize_wan_modules(
+            model_args.wan_model_path,
+            device=training_args.device,
+            dtype=torch.bfloat16 if training_args.bf16 else torch.float16,
+            train_wan=model_args.train_wan_dit,
+        )
+
     ## generation vision tower
     gen_vision_tower = model.get_gen_vision_tower()
     gen_vision_tower.to(
@@ -998,6 +1118,9 @@ def train(attn_implementation=None):
     model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
     model.config.pad_token_id = tokenizer.pad_token_id
 
+    if data_args.data_type == "video" and data_args.video_metadata_path is None:
+        raise ValueError("video_metadata_path is required when data_type is video")
+
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
 
     trainer = blip3oTrainer(
@@ -1029,4 +1152,3 @@ def train(attn_implementation=None):
 
 if __name__ == "__main__":
     train()
-

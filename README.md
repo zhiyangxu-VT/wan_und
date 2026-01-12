@@ -111,6 +111,27 @@ When training the diffusion transformer from scratch, we recommend using a large
 
 When finetuning with our BLIP3o-60k, we recommend using a large number of training steps (at least **10k steps**) along with a cosine annealing learning rate schedule that decays from 1×10⁻⁴ down to 0.
 
+## WAN 2.2 TI2V Video Training (LLM → WAN Diffusion)
+This repo includes a WAN2.2-TI2V-5B training path that conditions the WAN diffusion model on the LLM’s latent tokens and trains against WAN video latents.
+
+Required flags:
+```
+--video_diffusion_backend wan2.2-ti2v-5b \
+--wan_model_path /path/to/Wan-AI/Wan2.2-TI2V-5B \
+--data_type video \
+--video_metadata_path /path/to/video_train.jsonl \
+--video_folder /path/to/frames_root \
+```
+
+The JSONL format expects one sample per line:
+```
+{"id":"sample-1","prompt":"A robot walking in the snow.","video":"videos/sample-1","input_image":"videos/sample-1/000000.png"}
+```
+- `video` can be a directory of frames (sorted by filename) or use `video_frames` with an explicit list of frame paths.
+- `input_image` is optional; if omitted, the first frame is used for TI2V conditioning.
+
+Use `--num_frames`, `--video_height`, and `--video_width` to control frame sampling and resize.
+
 
 ## CLIP + Diffusion (Encoder + Decoder)
 We also provide two CLIP + Diffusion: 
@@ -214,5 +235,4 @@ To cite the paper and model
   year={2025}
 }
 ```
-
 
