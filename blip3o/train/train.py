@@ -55,7 +55,6 @@ class ModelArguments:
     freeze_backbone: bool = field(default=True)
     tune_mm_mlp_adapter: bool = field(default=False)
     vision_tower: Optional[str] = field(default=None)
-    gen_vision_tower: Optional[str] = field(default=None)
     mm_vision_select_layer: Optional[int] = field(default=-1)  # default to the last layer
     pretrain_mm_mlp_adapter: Optional[str] = field(default=None)
     pretrain_gen_mlp_adapter: Optional[str] = field(default=None)
@@ -361,6 +360,7 @@ def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_im
 
     # Apply prompt templates
     input_ids, targets = [], []
+    sources = [sources] # quick fix
     for i, source in enumerate(sources):
         if roles[source[0]["from"]] != roles["human"]:
             source = source[1:]
@@ -713,7 +713,7 @@ class LazySupervisedMixDataset(Dataset):
                         images = None
                         break  # Skip to the next image if there's an error
 
-                if not images is None:
+                if not images is None and self.data_args.gen_image_processor is not None:
                     try:
                         temp = img_process(
                             images,
@@ -743,6 +743,8 @@ class LazySupervisedMixDataset(Dataset):
             # image exist in the data
             if "image" in self.list_data_dict[i]:
                 if inst_type == "gen":
+                    if self.data_args.gen_image_processor is None:
+                        raise ValueError("gen_image_processor is not set; gen_vision_tower support was removed.")
                     data_dict["gen_image"] = img_process(
                         images,
                         self.data_args.gen_image_processor,
@@ -757,11 +759,12 @@ class LazySupervisedMixDataset(Dataset):
 
                     data_dict["und_image"] = image_inputs.pixel_values
                     data_dict["grid_thw"] = image_inputs.image_grid_thw
-                    data_dict["gen_image"] = img_process(
-                        resized_images,
-                        self.data_args.gen_image_processor,
-                        self.data_args.image_aspect_ratio,
-                    )
+                    if self.data_args.gen_image_processor is not None:
+                        data_dict["gen_image"] = img_process(
+                            resized_images,
+                            self.data_args.gen_image_processor,
+                            self.data_args.image_aspect_ratio,
+                        )
 
             elif self.data_args.is_multimodal:
                 crop_size = self.data_args.image_processor.crop_size
@@ -962,6 +965,8 @@ def train(attn_implementation=None):
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     print(model_args, data_args, training_args)
     local_rank = training_args.local_rank
+    if training_args.lr_scheduler_type == "cosine_with_min_lr" and not training_args.lr_scheduler_kwargs:
+        training_args.lr_scheduler_kwargs = {"min_lr": 1e-5}
     compute_dtype = torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32)
 
     bnb_model_from_pretrained_args = {}
@@ -1080,16 +1085,8 @@ def train(attn_implementation=None):
             train_wan=model_args.train_wan_dit,
         )
 
-    ## generation vision tower
-    gen_vision_tower = model.get_gen_vision_tower()
-    gen_vision_tower.to(
-        dtype=torch.bfloat16 if training_args.bf16 else torch.float16,
-        device=training_args.device,
-    )
-    gen_vision_tower.requires_grad_(False)
-
-    data_args.gen_image_processor = gen_vision_tower.image_processor
     data_args.image_processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct").image_processor
+    data_args.gen_image_processor = None
 
     data_args.is_multimodal = True
     data_args.n_query = model_args.n_query

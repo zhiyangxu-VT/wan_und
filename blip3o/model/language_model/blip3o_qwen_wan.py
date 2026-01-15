@@ -46,8 +46,10 @@ class blip3oQwenForCausalLMWan(Qwen2_5_VLForConditionalGeneration, blip3oMetaFor
     def initialize_wan_modules(self, model_path, device, dtype, train_wan=False):
         self.wan_dit = load_wan_ti2v_dit(model_path, device=device, dtype=dtype)
         self.wan_vae = load_wan_ti2v_vae(model_path, device=device, dtype=dtype)
-        self.wan_dit.requires_grad_(train_wan)
+        self.wan_dit.requires_grad_(False)
         self.wan_vae.requires_grad_(False)
+        if train_wan:
+            print("[WAN] train_wan_dit is ignored; WAN modules are frozen.")
 
     def prepare_inputs_labels_for_video(
         self, input_ids, position_ids, attention_mask, past_key_values, labels
@@ -59,7 +61,7 @@ class blip3oQwenForCausalLMWan(Qwen2_5_VLForConditionalGeneration, blip3oMetaFor
         image_idx = input_ids == IMAGE_TOKEN_IDX
         gen_img_idx = torch.logical_and(output_indicator, image_idx)
 
-        text_embeds = self.get_model().embed_tokens(input_ids)
+        text_embeds = self.get_model().get_input_embeddings()(input_ids)
         latent_queries = self.get_model().latent_queries.repeat(input_ids.shape[0], 1, 1)
         latent_queries = latent_queries.contiguous().view(-1, latent_queries.shape[-1])
         text_embeds = text_embeds.clone()
@@ -92,10 +94,15 @@ class blip3oQwenForCausalLMWan(Qwen2_5_VLForConditionalGeneration, blip3oMetaFor
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
+        gen_image: Optional[torch.FloatTensor] = None,
+        und_image: Optional[torch.FloatTensor] = None,
+        grid_thw: Optional[torch.FloatTensor] = None,
+        image_sizes: Optional[List[List[int]]] = None,
         gen_video: Optional[torch.FloatTensor] = None,
         input_image: Optional[torch.FloatTensor] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -140,8 +147,9 @@ class blip3oQwenForCausalLMWan(Qwen2_5_VLForConditionalGeneration, blip3oMetaFor
             if i_s_pos is None:
                 raise ValueError("i_s_pos is required for WAN diffusion training")
             img_hidden_states = []
+            n_query = self.get_n_query()
             for b in range(hidden_states.shape[0]):
-                img_hidden_states.append(hidden_states[b, i_s_pos[b]:i_s_pos[b] + 64, :])
+                img_hidden_states.append(hidden_states[b, i_s_pos[b]:i_s_pos[b] + n_query, :])
             img_hidden_states = torch.stack(img_hidden_states, dim=0)
             context = self.wan_context_projector(img_hidden_states)
 

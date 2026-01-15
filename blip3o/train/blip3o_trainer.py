@@ -5,13 +5,25 @@ import numpy as np
 from torch.utils.data import Sampler
 
 from transformers import Trainer
-from transformers.trainer import (
-    is_sagemaker_mp_enabled,
-    get_parameter_names,
-    has_length,
-    ALL_LAYERNORM_LAYERS,
-    logger,
-)
+try:
+    from transformers.trainer import (
+        is_sagemaker_mp_enabled,
+        get_parameter_names,
+        has_length,
+        ALL_LAYERNORM_LAYERS,
+        logger,
+    )
+except ImportError:
+    from transformers.trainer import (
+        is_sagemaker_mp_enabled,
+        get_parameter_names,
+        has_length,
+        logger,
+    )
+    try:
+        from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+    except Exception:
+        ALL_LAYERNORM_LAYERS = (nn.LayerNorm,)
 from typing import List, Optional
 from transformers.utils import is_torch_xla_available
 
@@ -146,12 +158,15 @@ class LengthGroupedSampler(Sampler):
 
 class blip3oTrainer(Trainer):
 
-    def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
-        if self.train_dataset is None or not has_length(self.train_dataset):
+    def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
+        if train_dataset is None:
+            train_dataset = self.train_dataset
+
+        if train_dataset is None or not has_length(train_dataset):
             return None
 
         if self.args.group_by_modality_length:
-            lengths = self.train_dataset.modality_lengths
+            lengths = train_dataset.modality_lengths
             return LengthGroupedSampler(
                 self.args.train_batch_size,
                 world_size=self.args.world_size * self.args.gradient_accumulation_steps,
@@ -159,7 +174,10 @@ class blip3oTrainer(Trainer):
                 group_by_modality=True,
             )
         else:
-            return super()._get_train_sampler()
+            try:
+                return super()._get_train_sampler(train_dataset)
+            except TypeError:
+                return super()._get_train_sampler()
             
     # def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
     #     if not hasattr(self, "largest_loss"):
@@ -285,4 +303,3 @@ class blip3oTrainer(Trainer):
                 logger.info(f"skipped: {skipped/2**20}M params")
 
         return self.optimizer
-
